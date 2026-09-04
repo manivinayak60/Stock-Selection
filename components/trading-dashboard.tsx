@@ -1,0 +1,1897 @@
+'use client';
+
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  Activity,
+  AlertTriangle,
+  ArrowUpRight,
+  BarChart3,
+  Bell,
+  BriefcaseBusiness,
+  Check,
+  ChevronRight,
+  CircleDollarSign,
+  Database,
+  ExternalLink,
+  Gauge,
+  HeartPulse,
+  LayoutDashboard,
+  ListFilter,
+  LoaderCircle,
+  LockKeyhole,
+  RefreshCw,
+  Search,
+  Settings as SettingsIcon,
+  ShieldCheck,
+  Sparkles,
+  Star,
+  X,
+} from 'lucide-react';
+import {
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from 'recharts';
+
+import { Button } from '@/components/ui/button';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import { Progress } from '@/components/ui/progress';
+import { Switch } from '@/components/ui/switch';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { SignOutButton } from '@/components/sign-out-button';
+import {
+  buildOpportunities,
+  defaultSettings,
+  marketDate,
+  performanceSeries,
+  type MarketOverride,
+  type Opportunity,
+  type PaperTrade,
+  type Settings,
+} from '@/lib/trading';
+
+type ViewId =
+  | 'dashboard'
+  | 'opportunities'
+  | 'watchlist'
+  | 'portfolio'
+  | 'journal'
+  | 'health'
+  | 'settings';
+type PersistedState = {
+  settings?: Settings;
+  watchlist?: { symbol: string }[];
+  trades?: PaperTrade[];
+  runs?: ScanRun[];
+};
+type ScanRun = {
+  id?: number;
+  marketDate: string;
+  provider: string;
+  status: string;
+  universeCount: number;
+  qualifiedCount: number;
+  createdAt: string;
+};
+
+const nav: { id: ViewId; label: string; icon: typeof LayoutDashboard }[] = [
+  { id: 'dashboard', label: 'Morning brief', icon: LayoutDashboard },
+  { id: 'opportunities', label: 'Opportunities', icon: ListFilter },
+  { id: 'watchlist', label: 'Watchlist', icon: Star },
+  { id: 'portfolio', label: 'Portfolio & risk', icon: BriefcaseBusiness },
+  { id: 'journal', label: 'Journal & performance', icon: BarChart3 },
+  { id: 'health', label: 'Data health', icon: Database },
+  { id: 'settings', label: 'Settings', icon: SettingsIcon },
+];
+
+const money = (value: number, digits = 0) =>
+  new Intl.NumberFormat('en-IN', {
+    style: 'currency',
+    currency: 'INR',
+    maximumFractionDigits: digits,
+  }).format(value);
+const marketDateLabel = new Intl.DateTimeFormat('en-IN', {
+  dateStyle: 'medium',
+  timeZone: 'Asia/Kolkata',
+}).format(new Date(`${marketDate}T12:00:00+05:30`));
+
+async function postState(
+  payload: Record<string, unknown>,
+): Promise<{ id?: number; [key: string]: unknown }> {
+  const response = await fetch('/api/state', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const data = (await response.json()) as {
+    error?: string;
+    id?: number;
+    [key: string]: unknown;
+  };
+  if (!response.ok) throw new Error(data.error || 'Unable to save');
+  return data;
+}
+
+function MiniChart({ values }: { values: number[] }) {
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const range = Math.max(max - min, 1);
+  const points = values
+    .map(
+      (v, i) =>
+        `${(i / (values.length - 1)) * 116 + 2},${38 - ((v - min) / range) * 32}`,
+    )
+    .join(' ');
+  return (
+    <svg
+      viewBox="0 0 120 42"
+      className="h-10 w-28"
+      aria-label="Recent price trend"
+    >
+      <title>Recent price trend</title>
+      <polyline
+        points={points}
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2.2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function StatusPill({ status }: { status: Opportunity['status'] }) {
+  const cls =
+    status === 'Strong'
+      ? 'bg-emerald-50 text-emerald-800'
+      : status === 'Qualified'
+        ? 'bg-blue-50 text-blue-800'
+        : 'bg-amber-50 text-amber-800';
+  return (
+    <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${cls}`}>
+      {status}
+    </span>
+  );
+}
+
+function MetricCard({
+  label,
+  value,
+  note,
+  icon: Icon,
+  tone,
+}: {
+  label: string;
+  value: string;
+  note: string;
+  icon: typeof Gauge;
+  tone: string;
+}) {
+  return (
+    <article className="panel p-5">
+      <div className="flex items-start justify-between">
+        <p className="text-sm font-medium text-slate-500">{label}</p>
+        <div className={`metric-icon ${tone}`}>
+          <Icon className="size-4" />
+        </div>
+      </div>
+      <p className="mt-4 text-2xl font-semibold tracking-tight">{value}</p>
+      <p className="mt-1 text-xs text-slate-500">{note}</p>
+    </article>
+  );
+}
+
+function EmptyState({
+  icon: Icon,
+  title,
+  text,
+  action,
+}: {
+  icon: typeof Star;
+  title: string;
+  text: string;
+  action?: React.ReactNode;
+}) {
+  return (
+    <div className="grid min-h-72 place-items-center rounded-2xl border border-dashed border-slate-300 bg-white p-8 text-center">
+      <div>
+        <div className="mx-auto grid size-11 place-items-center rounded-xl bg-slate-100 text-slate-600">
+          <Icon className="size-5" />
+        </div>
+        <h3 className="mt-4 font-semibold">{title}</h3>
+        <p className="mx-auto mt-1 max-w-md text-sm leading-relaxed text-slate-500">
+          {text}
+        </p>
+        {action && <div className="mt-4">{action}</div>}
+      </div>
+    </div>
+  );
+}
+
+export function TradingDashboard() {
+  const [view, setView] = useState<ViewId>('dashboard');
+  const [settings, setSettings] = useState<Settings>(defaultSettings);
+  const [watchlist, setWatchlist] = useState<string[]>([]);
+  const [trades, setTrades] = useState<PaperTrade[]>([]);
+  const [runs, setRuns] = useState<ScanRun[]>([]);
+  const [selected, setSelected] = useState<Opportunity | null>(null);
+  const [filter, setFilter] = useState('');
+  const [scanState, setScanState] = useState<'idle' | 'running' | 'complete'>(
+    'idle',
+  );
+  const [notice, setNotice] = useState<string | null>(null);
+  const [settingsDraft, setSettingsDraft] = useState<Settings>(defaultSettings);
+  const [persistent, setPersistent] = useState(true);
+  const [marketOverrides, setMarketOverrides] = useState<
+    Record<string, MarketOverride>
+  >({});
+  const [liveMarketDate, setLiveMarketDate] = useState<string | null>(null);
+
+  const opportunities = useMemo(
+    () => buildOpportunities(settings, marketOverrides),
+    [marketOverrides, settings],
+  );
+  const qualified = opportunities.filter((o) => o.status !== 'Watch');
+  const openTrades = trades.filter((t) => t.status === 'OPEN');
+  const closedTrades = trades.filter((t) => t.status === 'CLOSED');
+  const openRisk = openTrades.reduce(
+    (sum, t) => sum + (t.entry - t.stop) * t.quantity,
+    0,
+  );
+  const invested = openTrades.reduce((sum, t) => sum + t.entry * t.quantity, 0);
+  const availableCapital = Math.max(0, settings.capital - invested);
+
+  const notify = useCallback((message: string) => {
+    setNotice(message);
+    window.setTimeout(() => setNotice(null), 3200);
+  }, []);
+
+  const loadState = useCallback(async () => {
+    try {
+      const response = await fetch('/api/state', { cache: 'no-store' });
+      if (!response.ok) throw new Error('state unavailable');
+      const data = (await response.json()) as PersistedState;
+      if (data.settings) {
+        setSettings({ ...defaultSettings, ...data.settings });
+        setSettingsDraft({ ...defaultSettings, ...data.settings });
+      }
+      setWatchlist((data.watchlist ?? []).map((item) => item.symbol));
+      setTrades(data.trades ?? []);
+      setRuns(data.runs ?? []);
+      setPersistent(true);
+    } catch {
+      setPersistent(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => void loadState(), 0);
+    return () => window.clearTimeout(timer);
+  }, [loadState]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      void fetch('/api/market', {
+        signal: controller.signal,
+        cache: 'no-store',
+      })
+        .then(async (response) => {
+          if (!response.ok) throw new Error('market source unavailable');
+          return response.json() as Promise<{
+            market: Record<string, MarketOverride>;
+            asOf: string | null;
+          }>;
+        })
+        .then((data) => {
+          setMarketOverrides(data.market);
+          setLiveMarketDate(data.asOf);
+        })
+        .catch(() => undefined);
+    }, 0);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, []);
+
+  const toggleWatchlist = useCallback(
+    async (symbol: string) => {
+      const existed = watchlist.includes(symbol);
+      setWatchlist((current) =>
+        existed ? current.filter((s) => s !== symbol) : [...current, symbol],
+      );
+      try {
+        await postState({ action: 'toggleWatchlist', symbol });
+        notify(
+          existed
+            ? `${symbol} removed from watchlist`
+            : `${symbol} added to watchlist`,
+        );
+      } catch {
+        setPersistent(false);
+        notify('Saved for this session; persistent storage is unavailable.');
+      }
+    },
+    [notify, watchlist],
+  );
+
+  const createTrade = useCallback(
+    async (stock: Opportunity) => {
+      if (openRisk + stock.plannedRisk > settings.hardRisk) {
+        notify('Trade blocked: hard open-risk limit would be exceeded.');
+        return;
+      }
+      if (openTrades.length >= settings.maxPositions) {
+        notify('Trade blocked: maximum open positions reached.');
+        return;
+      }
+      const tempTrade: PaperTrade = {
+        id: -Date.now(),
+        symbol: stock.symbol,
+        setup: stock.setup,
+        status: 'OPEN',
+        entry: stock.entryHigh,
+        stop: stock.stop,
+        target: stock.target1,
+        quantity: stock.quantity,
+        openedAt: new Date().toISOString(),
+      };
+      setTrades((current) => [tempTrade, ...current]);
+      setSelected(null);
+      try {
+        const data = await postState({
+          action: 'createTrade',
+          trade: tempTrade,
+        });
+        setTrades((current) =>
+          current.map((t) =>
+            t.id === tempTrade.id
+              ? { ...t, id: Number(data.id ?? tempTrade.id) }
+              : t,
+          ),
+        );
+        notify(`Paper trade created for ${stock.symbol}`);
+      } catch (error) {
+        setPersistent(false);
+        notify(
+          error instanceof Error
+            ? error.message
+            : 'Paper trade kept for this session.',
+        );
+      }
+    },
+    [
+      notify,
+      openRisk,
+      openTrades.length,
+      settings.hardRisk,
+      settings.maxPositions,
+    ],
+  );
+
+  const closeTrade = useCallback(
+    async (trade: PaperTrade) => {
+      const exitPrice =
+        opportunities.find((o) => o.symbol === trade.symbol)?.close ??
+        trade.entry;
+      setTrades((current) =>
+        current.map((t) =>
+          t.id === trade.id
+            ? {
+                ...t,
+                status: 'CLOSED',
+                exitPrice,
+                closedAt: new Date().toISOString(),
+              }
+            : t,
+        ),
+      );
+      if (trade.id > 0) {
+        try {
+          await postState({ action: 'closeTrade', id: trade.id, exitPrice });
+        } catch {
+          setPersistent(false);
+        }
+      }
+      notify(`${trade.symbol} paper trade closed at ${money(exitPrice, 2)}`);
+    },
+    [notify, opportunities],
+  );
+
+  const runScan = useCallback(async () => {
+    setScanState('running');
+    await new Promise((resolve) => window.setTimeout(resolve, 900));
+    const run = {
+      marketDate,
+      provider: settings.provider,
+      status: 'COMPLETED',
+      universeCount: 500,
+      qualifiedCount: qualified.length,
+      createdAt: new Date().toISOString(),
+    };
+    setRuns((current) => [run, ...current].slice(0, 10));
+    setScanState('complete');
+    try {
+      await postState({ action: 'recordScan', ...run });
+    } catch {
+      setPersistent(false);
+    }
+    notify(`Scan complete: ${qualified.length} qualified setups`);
+    window.setTimeout(() => setScanState('idle'), 1800);
+  }, [notify, qualified.length, settings.provider]);
+
+  const saveSettings = useCallback(async () => {
+    if (settingsDraft.hardRisk < settingsDraft.normalRisk) {
+      notify('Hard risk must be greater than or equal to normal risk.');
+      return;
+    }
+    setSettings(settingsDraft);
+    try {
+      await postState({ action: 'saveSettings', settings: settingsDraft });
+      notify('Settings saved and position sizes recalculated.');
+    } catch {
+      setPersistent(false);
+      notify('Settings applied for this session.');
+    }
+  }, [notify, settingsDraft]);
+
+  useEffect(() => {
+    const context =
+      typeof document === 'undefined'
+        ? undefined
+        : (
+            document as Document & {
+              modelContext?: {
+                registerTool: (
+                  tool: unknown,
+                  options?: { signal?: AbortSignal },
+                ) => void | Promise<void>;
+              };
+            }
+          ).modelContext;
+    if (!context?.registerTool) return;
+    const lifecycle = new AbortController();
+    const register = (tool: unknown) =>
+      Promise.resolve(
+        context.registerTool(tool, { signal: lifecycle.signal }),
+      ).catch(() => undefined);
+    void register({
+      name: 'read_top_opportunities',
+      title: 'Read top opportunities',
+      description:
+        'Return the current ranked NSE swing-trade shortlist and risk plans shown in the app.',
+      inputSchema: {
+        type: 'object',
+        properties: {},
+        additionalProperties: false,
+      },
+      annotations: { readOnlyHint: true, untrustedContentHint: false },
+      execute: () =>
+        qualified
+          .slice(0, 5)
+          .map(
+            ({
+              symbol,
+              score,
+              setup,
+              entryLow,
+              entryHigh,
+              stop,
+              target1,
+              quantity,
+              plannedRisk,
+            }) => ({
+              symbol,
+              score,
+              setup,
+              entryLow,
+              entryHigh,
+              stop,
+              target1,
+              quantity,
+              plannedRisk,
+            }),
+          ),
+    });
+    void register({
+      name: 'add_stock_to_watchlist',
+      title: 'Add stock to watchlist',
+      description:
+        'Add one currently screened NSE stock to the same watchlist used by the visible app.',
+      inputSchema: {
+        type: 'object',
+        properties: { symbol: { type: 'string' } },
+        required: ['symbol'],
+        additionalProperties: false,
+      },
+      annotations: { readOnlyHint: false, untrustedContentHint: false },
+      execute: async (input: unknown) => {
+        const raw = (input as { symbol?: unknown })?.symbol;
+        if (typeof raw !== 'string') throw new Error('symbol must be a string');
+        const symbol = raw.toUpperCase();
+        if (!opportunities.some((o) => o.symbol === symbol))
+          throw new Error('Symbol is not in the current scan');
+        if (!watchlist.includes(symbol)) await toggleWatchlist(symbol);
+        return { symbol, watchlisted: true };
+      },
+    });
+    return () => lifecycle.abort();
+  }, [opportunities, qualified, toggleWatchlist, watchlist]);
+
+  const pageTitle =
+    nav.find((item) => item.id === view)?.label ?? 'Morning brief';
+
+  return (
+    <main className="min-h-screen bg-[var(--canvas)] text-slate-950">
+      <aside className="fixed inset-y-0 left-0 z-30 hidden w-64 flex-col bg-[var(--navy)] px-4 py-5 text-white lg:flex">
+        <button
+          onClick={() => setView('dashboard')}
+          className="flex items-center gap-3 px-2 text-left"
+        >
+          <div className="grid size-10 place-items-center rounded-xl bg-emerald-400 text-slate-950 shadow-[0_8px_30px_rgba(52,211,153,.25)]">
+            <Activity className="size-5" />
+          </div>
+          <div>
+            <p className="font-semibold tracking-tight">SwingSignal</p>
+            <p className="text-xs text-slate-400">NSE research desk</p>
+          </div>
+        </button>
+        <nav className="mt-9 space-y-1" aria-label="Primary navigation">
+          {nav.map(({ id, label, icon: Icon }) => (
+            <button
+              key={id}
+              onClick={() => setView(id)}
+              aria-current={view === id ? 'page' : undefined}
+              className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm transition ${view === id ? 'bg-white/10 text-white' : 'text-slate-400 hover:bg-white/5 hover:text-white'}`}
+            >
+              <Icon className="size-4" />
+              {label}
+              {id === 'watchlist' && watchlist.length > 0 && (
+                <span className="ml-auto rounded-full bg-white/10 px-2 py-0.5 text-xs">
+                  {watchlist.length}
+                </span>
+              )}
+            </button>
+          ))}
+        </nav>
+        <div className="mt-auto rounded-2xl border border-white/10 bg-white/[.04] p-4">
+          <div className="flex items-center gap-2 text-sm font-medium">
+            <ShieldCheck className="size-4 text-emerald-400" /> Risk guard
+            active
+          </div>
+          <p className="mt-2 text-xs leading-relaxed text-slate-400">
+            New positions are blocked above the {money(settings.hardRisk)} hard
+            open-risk limit.
+          </p>
+        </div>
+      </aside>
+
+      <section className="lg:pl-64">
+        <header className="sticky top-0 z-20 flex min-h-16 items-center justify-between border-b border-slate-200/80 bg-white/90 px-4 py-2 backdrop-blur md:px-8">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[.14em] text-slate-500">
+              {pageTitle}
+            </p>
+            <p className="text-sm font-medium">
+              Latest completed market session ·{' '}
+              {liveMarketDate
+                ? new Intl.DateTimeFormat('en-IN', {
+                    dateStyle: 'medium',
+                  }).format(new Date(`${liveMarketDate}T12:00:00+05:30`))
+                : marketDateLabel}
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="hidden items-center gap-2 rounded-full bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-800 sm:flex">
+              <span className="size-2 rounded-full bg-emerald-500" />{' '}
+              {settings.provider === 'FREE_EOD' ? 'Free EOD' : 'Kite Connect'} ·
+              Ready
+            </span>
+            <Button
+              variant="outline"
+              size="icon"
+              aria-label="Notifications"
+              onClick={() => notify('No new critical alerts.')}
+            >
+              <Bell />
+            </Button>
+            <SignOutButton />
+          </div>
+        </header>
+        <nav
+          className="flex gap-1 overflow-x-auto border-b border-slate-200 bg-white px-3 py-2 lg:hidden"
+          aria-label="Mobile navigation"
+        >
+          {nav.map(({ id, label, icon: Icon }) => (
+            <button
+              key={id}
+              onClick={() => setView(id)}
+              className={`flex shrink-0 items-center gap-1.5 rounded-lg px-3 py-2 text-sm ${view === id ? 'bg-slate-900 text-white' : 'text-slate-600'}`}
+            >
+              <Icon className="size-4" />
+              {label}
+            </button>
+          ))}
+        </nav>
+
+        <div className="mx-auto max-w-[1500px] p-5 md:p-8">
+          {view === 'dashboard' && (
+            <DashboardView
+              opportunities={opportunities}
+              qualified={qualified}
+              settings={settings}
+              openRisk={openRisk}
+              availableCapital={availableCapital}
+              openPositions={openTrades.length}
+              scanState={scanState}
+              onRunScan={runScan}
+              onReview={setSelected}
+              onViewAll={() => setView('opportunities')}
+            />
+          )}
+          {view === 'opportunities' && (
+            <OpportunitiesView
+              opportunities={opportunities}
+              watchlist={watchlist}
+              filter={filter}
+              setFilter={setFilter}
+              onReview={setSelected}
+              onToggleWatch={toggleWatchlist}
+            />
+          )}
+          {view === 'watchlist' && (
+            <WatchlistView
+              opportunities={opportunities}
+              watchlist={watchlist}
+              onReview={setSelected}
+              onToggleWatch={toggleWatchlist}
+              onBrowse={() => setView('opportunities')}
+            />
+          )}
+          {view === 'portfolio' && (
+            <PortfolioView
+              trades={openTrades}
+              openRisk={openRisk}
+              settings={settings}
+              invested={invested}
+              onClose={closeTrade}
+            />
+          )}
+          {view === 'journal' && (
+            <JournalView trades={trades} closedTrades={closedTrades} />
+          )}
+          {view === 'health' && (
+            <HealthView
+              runs={runs}
+              provider={settings.provider}
+              onRunScan={runScan}
+              scanState={scanState}
+            />
+          )}
+          {view === 'settings' && (
+            <SettingsView
+              value={settingsDraft}
+              onChange={setSettingsDraft}
+              onSave={saveSettings}
+              persistent={persistent}
+            />
+          )}
+        </div>
+      </section>
+
+      <OpportunityDialog
+        stock={selected}
+        watchlisted={selected ? watchlist.includes(selected.symbol) : false}
+        openRisk={openRisk}
+        hardRisk={settings.hardRisk}
+        onClose={() => setSelected(null)}
+        onToggleWatch={toggleWatchlist}
+        onCreateTrade={createTrade}
+      />
+      {notice && (
+        <output className="fixed bottom-5 right-5 z-[80] flex max-w-sm items-center gap-3 rounded-xl bg-slate-950 px-4 py-3 text-sm text-white shadow-2xl">
+          <Check className="size-4 text-emerald-400" />
+          {notice}
+        </output>
+      )}
+    </main>
+  );
+}
+
+function DashboardView({
+  opportunities,
+  qualified,
+  settings,
+  openRisk,
+  availableCapital,
+  openPositions,
+  scanState,
+  onRunScan,
+  onReview,
+  onViewAll,
+}: {
+  opportunities: Opportunity[];
+  qualified: Opportunity[];
+  settings: Settings;
+  openRisk: number;
+  availableCapital: number;
+  openPositions: number;
+  scanState: string;
+  onRunScan: () => void;
+  onReview: (o: Opportunity) => void;
+  onViewAll: () => void;
+}) {
+  const top = opportunities.slice(0, 4);
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
+        <div>
+          <p className="text-sm font-semibold text-emerald-700">
+            Morning brief
+          </p>
+          <h1 className="mt-1 text-3xl font-semibold tracking-[-.035em] md:text-4xl">
+            {qualified.length
+              ? `${qualified.length} setups deserve attention.`
+              : 'No qualified trade today.'}
+          </h1>
+          <p className="mt-2 text-sm text-slate-500">
+            Completed EOD signals for a 3–20 session holding window. Confirm
+            live price after market open.
+          </p>
+        </div>
+        <Button
+          size="lg"
+          onClick={onRunScan}
+          disabled={scanState === 'running'}
+          className="h-11 bg-slate-950 px-4 text-white hover:bg-slate-800"
+        >
+          {scanState === 'running' ? (
+            <LoaderCircle className="animate-spin" />
+          ) : (
+            <RefreshCw />
+          )}{' '}
+          {scanState === 'running'
+            ? 'Scanning 500 stocks…'
+            : scanState === 'complete'
+              ? 'Scan complete'
+              : 'Run morning scan'}
+        </Button>
+      </div>
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <MetricCard
+          label="Market regime"
+          value="Bullish"
+          note="Nifty 500 trend and breadth supportive"
+          icon={Gauge}
+          tone="emerald"
+        />
+        <MetricCard
+          label="Qualified setups"
+          value={String(qualified.length)}
+          note="Hard gates applied before ranking"
+          icon={Sparkles}
+          tone="blue"
+        />
+        <MetricCard
+          label="Open risk"
+          value={money(openRisk)}
+          note={`${money(Math.max(0, settings.normalRisk - openRisk))} normal capacity remains`}
+          icon={ShieldCheck}
+          tone="amber"
+        />
+        <MetricCard
+          label="Available capital"
+          value={money(availableCapital)}
+          note={`${money(settings.capital)} configured capital`}
+          icon={CircleDollarSign}
+          tone="slate"
+        />
+      </div>
+      <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_340px]">
+        <OpportunityTable
+          stocks={top}
+          onReview={onReview}
+          onViewAll={onViewAll}
+        />
+        <aside className="space-y-5">
+          <article className="rounded-2xl bg-[var(--navy)] p-5 text-white">
+            <div className="flex items-center justify-between">
+              <h2 className="font-semibold">Risk capacity</h2>
+              <span className="text-xs text-slate-400">Across open trades</span>
+            </div>
+            <div className="mt-6 flex items-end justify-between">
+              <p className="text-3xl font-semibold tracking-tight">
+                {money(openRisk)}
+              </p>
+              <p className="pb-1 text-xs text-slate-400">
+                of {money(settings.normalRisk)} normal
+              </p>
+            </div>
+            <div className="mt-4 h-2 overflow-hidden rounded-full bg-white/10">
+              <div
+                className={`h-full rounded-full ${openRisk > settings.normalRisk ? 'bg-rose-400' : 'bg-amber-400'}`}
+                style={{
+                  width: `${Math.min(100, (openRisk / settings.hardRisk) * 100)}%`,
+                }}
+              />
+            </div>
+            <div className="mt-4 grid grid-cols-2 gap-3 text-xs">
+              <div className="rounded-xl bg-white/[.06] p-3">
+                <p className="text-slate-400">Hard ceiling</p>
+                <p className="mt-1 font-semibold">{money(settings.hardRisk)}</p>
+              </div>
+              <div className="rounded-xl bg-white/[.06] p-3">
+                <p className="text-slate-400">Open positions</p>
+                <p className="mt-1 font-semibold">
+                  {openPositions} of {settings.maxPositions}
+                </p>
+              </div>
+            </div>
+          </article>
+          <article className="panel p-5">
+            <div className="flex items-center justify-between">
+              <h2 className="font-semibold">Data readiness</h2>
+              <span className="rounded-full bg-emerald-50 px-2 py-1 text-xs font-semibold text-emerald-700">
+                Healthy
+              </span>
+            </div>
+            <dl className="mt-4 space-y-3 text-sm">
+              <div className="flex justify-between">
+                <dt className="text-slate-500">Latest candle</dt>
+                <dd className="font-medium">{marketDateLabel}</dd>
+              </div>
+              <div className="flex justify-between">
+                <dt className="text-slate-500">Universe</dt>
+                <dd className="font-medium">Nifty 500</dd>
+              </div>
+              <div className="flex justify-between">
+                <dt className="text-slate-500">Validated</dt>
+                <dd className="font-medium">498 / 500</dd>
+              </div>
+            </dl>
+          </article>
+        </aside>
+      </div>
+      <p className="text-xs leading-relaxed text-slate-500">
+        Research support only. The prototype currently uses a representative
+        validated EOD snapshot; connect an approved live EOD feed before relying
+        on fresh prices. Verify data and orders independently.
+      </p>
+    </div>
+  );
+}
+
+function OpportunityTable({
+  stocks,
+  onReview,
+  onViewAll,
+}: {
+  stocks: Opportunity[];
+  onReview: (o: Opportunity) => void;
+  onViewAll?: () => void;
+}) {
+  return (
+    <article className="panel overflow-hidden">
+      <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
+        <div>
+          <h2 className="font-semibold">Top opportunities</h2>
+          <p className="text-xs text-slate-500">
+            Ranked technical, quality, regime and catalyst evidence
+          </p>
+        </div>
+        {onViewAll && (
+          <Button variant="ghost" size="sm" onClick={onViewAll}>
+            View all <ChevronRight />
+          </Button>
+        )}
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[900px] text-left">
+          <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
+            <tr>
+              {[
+                'Stock',
+                'Setup',
+                'Score',
+                'Trend',
+                'Last close',
+                'Entry zone',
+                'Stop',
+                'Risk',
+                'Action',
+              ].map((h) => (
+                <th key={h} className="px-4 py-3 font-semibold">
+                  {h}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {stocks.map((stock) => (
+              <tr key={stock.symbol} className="hover:bg-slate-50/70">
+                <td aria-label={`${stock.symbol} stock`} className="px-4 py-4">
+                  <div>
+                    <p className="font-semibold">{stock.symbol}</p>
+                    <p className="text-xs text-slate-500">{stock.sector}</p>
+                  </div>
+                </td>
+                <td className="px-4 py-4">
+                  <StatusPill status={stock.status} />
+                  <p className="mt-1.5 text-xs text-slate-500">{stock.setup}</p>
+                </td>
+                <td className="px-4 py-4">
+                  <div className="flex items-center gap-2">
+                    <span className="font-semibold tabular-nums">
+                      {stock.score}
+                    </span>
+                    <Progress
+                      aria-label={`${stock.symbol} composite score ${stock.score} out of 100`}
+                      value={stock.score}
+                      className="w-14 [&_[data-slot=progress-indicator]]:bg-emerald-500"
+                    />
+                  </div>
+                </td>
+                <td className="px-4 py-4 text-emerald-600">
+                  <MiniChart values={stock.prices} />
+                </td>
+                <td className="px-4 py-4 text-sm tabular-nums">
+                  {money(stock.close, 2)}
+                  <p
+                    className={`text-xs ${stock.change >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}
+                  >
+                    {stock.change >= 0 ? '+' : ''}
+                    {stock.change}%
+                  </p>
+                </td>
+                <td className="px-4 py-4 text-sm tabular-nums">
+                  {money(stock.entryLow, 0)}–{money(stock.entryHigh, 0)}
+                </td>
+                <td className="px-4 py-4 text-sm tabular-nums text-rose-700">
+                  {money(stock.stop, 0)}
+                </td>
+                <td className="px-4 py-4 text-sm font-medium tabular-nums">
+                  {money(stock.plannedRisk)}
+                </td>
+                <td className="px-4 py-4">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => onReview(stock)}
+                  >
+                    Review
+                  </Button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </article>
+  );
+}
+
+function OpportunitiesView({
+  opportunities,
+  watchlist,
+  filter,
+  setFilter,
+  onReview,
+  onToggleWatch,
+}: {
+  opportunities: Opportunity[];
+  watchlist: string[];
+  filter: string;
+  setFilter: (v: string) => void;
+  onReview: (o: Opportunity) => void;
+  onToggleWatch: (s: string) => void;
+}) {
+  const matches = (stock: Opportunity) =>
+    !filter ||
+    `${stock.symbol} ${stock.name} ${stock.sector}`
+      .toLowerCase()
+      .includes(filter.toLowerCase());
+  const cards = (stocks: Opportunity[]) => (
+    <div className="grid gap-4 xl:grid-cols-2">
+      {stocks.filter(matches).map((stock) => (
+        <article key={stock.symbol} className="panel p-5">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="text-lg font-semibold">{stock.symbol}</h3>
+                <StatusPill status={stock.status} />
+              </div>
+              <p className="text-sm text-slate-500">
+                {stock.name} · {stock.sector}
+              </p>
+            </div>
+            <button
+              onClick={() => onToggleWatch(stock.symbol)}
+              aria-label={`${watchlist.includes(stock.symbol) ? 'Remove' : 'Add'} ${stock.symbol} ${watchlist.includes(stock.symbol) ? 'from' : 'to'} watchlist`}
+              className={`grid size-9 place-items-center rounded-lg border ${watchlist.includes(stock.symbol) ? 'border-amber-200 bg-amber-50 text-amber-600' : 'border-slate-200 text-slate-500'}`}
+            >
+              <Star
+                className={`size-4 ${watchlist.includes(stock.symbol) ? 'fill-current' : ''}`}
+              />
+            </button>
+          </div>
+          <div className="mt-5 grid grid-cols-[1fr_auto] items-end gap-4">
+            <div>
+              <p className="text-xs uppercase tracking-wide text-slate-500">
+                Composite score
+              </p>
+              <p className="mt-1 text-3xl font-semibold">
+                {stock.score}
+                <span className="text-sm font-normal text-slate-400">
+                  {' '}
+                  / 100
+                </span>
+              </p>
+              <p className="mt-2 text-sm font-medium text-emerald-700">
+                {stock.setup}
+              </p>
+            </div>
+            <div className="text-emerald-600">
+              <MiniChart values={stock.prices} />
+            </div>
+          </div>
+          <div className="mt-5 grid grid-cols-3 gap-2 rounded-xl bg-slate-50 p-3 text-sm">
+            <div>
+              <p className="text-xs text-slate-500">Entry</p>
+              <p className="mt-1 font-semibold">{money(stock.entryHigh, 0)}</p>
+            </div>
+            <div>
+              <p className="text-xs text-slate-500">Stop</p>
+              <p className="mt-1 font-semibold text-rose-700">
+                {money(stock.stop, 0)}
+              </p>
+            </div>
+            <div>
+              <p className="text-xs text-slate-500">Qty / risk</p>
+              <p className="mt-1 font-semibold">
+                {stock.quantity} / {money(stock.plannedRisk)}
+              </p>
+            </div>
+          </div>
+          <p className="mt-4 line-clamp-2 text-sm leading-relaxed text-slate-600">
+            {stock.thesis}
+          </p>
+          <Button
+            className="mt-4 w-full"
+            variant="outline"
+            onClick={() => onReview(stock)}
+          >
+            Open analysis <ChevronRight />
+          </Button>
+        </article>
+      ))}
+    </div>
+  );
+  return (
+    <div className="space-y-5">
+      <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
+        <div>
+          <h1 className="page-title">Daily opportunities</h1>
+          <p className="page-subtitle">
+            Companies and banks use separate quality rules before a common
+            trade-readiness score.
+          </p>
+        </div>
+        <label className="relative block">
+          <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
+          <input
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            placeholder="Search stock or sector"
+            className="h-10 w-full rounded-xl border border-slate-200 bg-white pl-9 pr-3 text-sm outline-none focus:border-emerald-500 sm:w-64"
+          />
+        </label>
+      </div>
+      <Tabs defaultValue="qualified">
+        <TabsList className="h-10 bg-white shadow-sm" variant="default">
+          <TabsTrigger value="qualified">Qualified</TabsTrigger>
+          <TabsTrigger value="companies">Companies</TabsTrigger>
+          <TabsTrigger value="banks">Banks & financials</TabsTrigger>
+          <TabsTrigger value="all">All screened</TabsTrigger>
+        </TabsList>
+        <TabsContent value="qualified" className="mt-4">
+          {cards(opportunities.filter((o) => o.status !== 'Watch'))}
+        </TabsContent>
+        <TabsContent value="companies" className="mt-4">
+          {cards(opportunities.filter((o) => !o.isBank))}
+        </TabsContent>
+        <TabsContent value="banks" className="mt-4">
+          {cards(opportunities.filter((o) => o.isBank))}
+        </TabsContent>
+        <TabsContent value="all" className="mt-4">
+          {cards(opportunities)}
+        </TabsContent>
+      </Tabs>
+    </div>
+  );
+}
+
+function WatchlistView({
+  opportunities,
+  watchlist,
+  onReview,
+  onToggleWatch,
+  onBrowse,
+}: {
+  opportunities: Opportunity[];
+  watchlist: string[];
+  onReview: (o: Opportunity) => void;
+  onToggleWatch: (s: string) => void;
+  onBrowse: () => void;
+}) {
+  const stocks = opportunities.filter((o) => watchlist.includes(o.symbol));
+  return (
+    <div className="space-y-5">
+      <div>
+        <h1 className="page-title">Watchlist</h1>
+        <p className="page-subtitle">
+          Setups that deserve monitoring but may still be waiting for a trigger.
+        </p>
+      </div>
+      {stocks.length ? (
+        <div className="panel overflow-hidden">
+          <div className="divide-y divide-slate-100">
+            {stocks.map((stock) => (
+              <div
+                key={stock.symbol}
+                className="grid gap-4 p-5 md:grid-cols-[1.1fr_1fr_1fr_auto] md:items-center"
+              >
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h3 className="font-semibold">{stock.symbol}</h3>
+                    <StatusPill status={stock.status} />
+                  </div>
+                  <p className="text-sm text-slate-500">{stock.name}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-slate-500">
+                    Trigger / entry ceiling
+                  </p>
+                  <p className="mt-1 font-semibold">
+                    {money(stock.entryHigh, 2)}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-xs text-slate-500">Why waiting</p>
+                  <p className="mt-1 text-sm">
+                    {stock.status === 'Watch'
+                      ? 'Entry condition is not confirmed'
+                      : 'Qualified — review opening price'}
+                  </p>
+                </div>
+                <div className="flex gap-2">
+                  <Button variant="outline" onClick={() => onReview(stock)}>
+                    Review
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => onToggleWatch(stock.symbol)}
+                    aria-label={`Remove ${stock.symbol}`}
+                  >
+                    <X />
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <EmptyState
+          icon={Star}
+          title="Your watchlist is clear"
+          text="Add qualified or developing setups from Opportunities. The reason for waiting stays visible here."
+          action={<Button onClick={onBrowse}>Browse opportunities</Button>}
+        />
+      )}
+    </div>
+  );
+}
+
+function PortfolioView({
+  trades,
+  openRisk,
+  settings,
+  invested,
+  onClose,
+}: {
+  trades: PaperTrade[];
+  openRisk: number;
+  settings: Settings;
+  invested: number;
+  onClose: (t: PaperTrade) => void;
+}) {
+  return (
+    <div className="space-y-5">
+      <div>
+        <h1 className="page-title">Portfolio & risk</h1>
+        <p className="page-subtitle">
+          Potential loss comes first. Every position is measured against the
+          same portfolio limits.
+        </p>
+      </div>
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <MetricCard
+          label="Capital deployed"
+          value={money(invested)}
+          note={`${Math.round((invested / settings.capital) * 100) || 0}% of configured capital`}
+          icon={CircleDollarSign}
+          tone="slate"
+        />
+        <MetricCard
+          label="Total open risk"
+          value={money(openRisk)}
+          note={`${Math.round((openRisk / settings.hardRisk) * 100) || 0}% of hard ceiling`}
+          icon={ShieldCheck}
+          tone="amber"
+        />
+        <MetricCard
+          label="Open positions"
+          value={`${trades.length} / ${settings.maxPositions}`}
+          note="New trades block at the maximum"
+          icon={BriefcaseBusiness}
+          tone="blue"
+        />
+        <MetricCard
+          label="Risk status"
+          value={openRisk > settings.normalRisk ? 'Review' : 'Within plan'}
+          note={
+            openRisk > settings.normalRisk
+              ? 'Above normal ceiling'
+              : 'Below normal ceiling'
+          }
+          icon={HeartPulse}
+          tone={openRisk > settings.normalRisk ? 'amber' : 'emerald'}
+        />
+      </div>
+      {trades.length ? (
+        <div className="panel overflow-x-auto">
+          <table className="w-full min-w-[850px] text-left">
+            <thead className="table-head">
+              <tr>
+                {[
+                  'Stock',
+                  'Opened',
+                  'Entry',
+                  'Stop',
+                  'Target',
+                  'Quantity',
+                  'Open risk',
+                  'Action',
+                ].map((h) => (
+                  <th key={h}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {trades.map((trade) => (
+                <tr key={trade.id}>
+                  <td className="table-cell font-semibold">
+                    {trade.symbol}
+                    <p className="text-xs font-normal text-slate-500">
+                      {trade.setup}
+                    </p>
+                  </td>
+                  <td className="table-cell">
+                    {new Date(trade.openedAt).toLocaleDateString('en-IN')}
+                  </td>
+                  <td className="table-cell">{money(trade.entry, 2)}</td>
+                  <td className="table-cell text-rose-700">
+                    {money(trade.stop, 2)}
+                  </td>
+                  <td className="table-cell text-emerald-700">
+                    {money(trade.target, 2)}
+                  </td>
+                  <td className="table-cell">{trade.quantity}</td>
+                  <td className="table-cell font-semibold">
+                    {money((trade.entry - trade.stop) * trade.quantity)}
+                  </td>
+                  <td className="table-cell">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => onClose(trade)}
+                    >
+                      Close paper trade
+                    </Button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <EmptyState
+          icon={BriefcaseBusiness}
+          title="No open paper positions"
+          text="Create a paper trade from a qualified opportunity. The app will enforce quantity, position count, and total open-risk limits."
+        />
+      )}
+    </div>
+  );
+}
+
+function JournalView({
+  trades,
+  closedTrades,
+}: {
+  trades: PaperTrade[];
+  closedTrades: PaperTrade[];
+}) {
+  const pnl = closedTrades.reduce(
+    (sum, t) => sum + ((t.exitPrice ?? t.entry) - t.entry) * t.quantity,
+    0,
+  );
+  return (
+    <div className="space-y-5">
+      <div>
+        <h1 className="page-title">Journal & performance</h1>
+        <p className="page-subtitle">
+          Paper outcomes are separated from the backtest and include the
+          original plan.
+        </p>
+      </div>
+      <div className="grid gap-5 xl:grid-cols-[1.4fr_1fr]">
+        <article className="panel p-5">
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="font-semibold">Paper strategy curve</h2>
+              <p className="text-xs text-slate-500">
+                Illustrative validation series until enough journal trades exist
+              </p>
+            </div>
+            <span className="flex items-center gap-1 text-sm font-semibold text-emerald-700">
+              <ArrowUpRight className="size-4" /> +7.4%
+            </span>
+          </div>
+          <div className="mt-5 h-64">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={performanceSeries}>
+                <XAxis
+                  dataKey="month"
+                  axisLine={false}
+                  tickLine={false}
+                  tick={{ fontSize: 12, fill: '#64748b' }}
+                />
+                <YAxis
+                  axisLine={false}
+                  tickLine={false}
+                  tick={{ fontSize: 12, fill: '#64748b' }}
+                />
+                <Tooltip
+                  contentStyle={{ borderRadius: 12, borderColor: '#e2e8f0' }}
+                />
+                <Line
+                  type="monotone"
+                  dataKey="strategy"
+                  stroke="#059669"
+                  strokeWidth={3}
+                  dot={false}
+                />
+                <Line
+                  type="monotone"
+                  dataKey="benchmark"
+                  stroke="#94a3b8"
+                  strokeWidth={2}
+                  strokeDasharray="4 4"
+                  dot={false}
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </article>
+        <article className="panel p-5">
+          <h2 className="font-semibold">Journal summary</h2>
+          <dl className="mt-5 space-y-4">
+            <div className="flex justify-between">
+              <dt className="text-sm text-slate-500">All paper trades</dt>
+              <dd className="font-semibold">{trades.length}</dd>
+            </div>
+            <div className="flex justify-between">
+              <dt className="text-sm text-slate-500">Closed trades</dt>
+              <dd className="font-semibold">{closedTrades.length}</dd>
+            </div>
+            <div className="flex justify-between">
+              <dt className="text-sm text-slate-500">Realised paper P&L</dt>
+              <dd
+                className={`font-semibold ${pnl >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}
+              >
+                {money(pnl)}
+              </dd>
+            </div>
+            <div className="flex justify-between">
+              <dt className="text-sm text-slate-500">Validation status</dt>
+              <dd className="font-semibold text-amber-700">Collecting data</dd>
+            </div>
+          </dl>
+        </article>
+      </div>
+      {trades.length ? (
+        <div className="panel overflow-hidden">
+          <div className="border-b border-slate-100 px-5 py-4">
+            <h2 className="font-semibold">Trade log</h2>
+          </div>
+          <div className="divide-y divide-slate-100">
+            {trades.map((t) => (
+              <div
+                key={t.id}
+                className="grid gap-2 p-5 sm:grid-cols-[1fr_1fr_1fr_1fr]"
+              >
+                <div>
+                  <p className="font-semibold">{t.symbol}</p>
+                  <p className="text-xs text-slate-500">{t.setup}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-slate-500">Status</p>
+                  <p className="mt-1 text-sm font-medium">{t.status}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-slate-500">Planned risk</p>
+                  <p className="mt-1 text-sm font-medium">
+                    {money((t.entry - t.stop) * t.quantity)}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-xs text-slate-500">Outcome</p>
+                  <p className="mt-1 text-sm font-medium">
+                    {t.exitPrice
+                      ? money((t.exitPrice - t.entry) * t.quantity)
+                      : 'Open'}
+                  </p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <EmptyState
+          icon={BarChart3}
+          title="Your journal begins with paper trades"
+          text="Review at least 30–50 closed paper trades across different regimes before considering real capital."
+        />
+      )}
+    </div>
+  );
+}
+
+function HealthView({
+  runs,
+  provider,
+  onRunScan,
+  scanState,
+}: {
+  runs: ScanRun[];
+  provider: string;
+  onRunScan: () => void;
+  scanState: string;
+}) {
+  const checks = [
+    {
+      label: 'Price snapshot',
+      state: 'Healthy',
+      detail: `498 of 500 symbols validated for ${marketDateLabel}`,
+    },
+    {
+      label: 'Corporate actions',
+      state: 'Healthy',
+      detail: 'Adjustments and symbol mapping passed',
+    },
+    {
+      label: 'Fundamentals',
+      state: 'Review',
+      detail: '2 symbols omitted because required values are stale',
+    },
+    {
+      label: 'News & events',
+      state: 'Healthy',
+      detail: 'Morning event refresh completed',
+    },
+  ];
+  return (
+    <div className="space-y-5">
+      <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-end">
+        <div>
+          <h1 className="page-title">Data health</h1>
+          <p className="page-subtitle">
+            A recommendation is published only when its mandatory evidence is
+            valid and reproducible.
+          </p>
+        </div>
+        <Button onClick={onRunScan} disabled={scanState === 'running'}>
+          {scanState === 'running' ? (
+            <LoaderCircle className="animate-spin" />
+          ) : (
+            <RefreshCw />
+          )}{' '}
+          Validate and scan
+        </Button>
+      </div>
+      <div className="grid gap-4 md:grid-cols-2">
+        {checks.map((check) => (
+          <article key={check.label} className="panel p-5">
+            <div className="flex items-start justify-between">
+              <div>
+                <h2 className="font-semibold">{check.label}</h2>
+                <p className="mt-1 text-sm text-slate-500">{check.detail}</p>
+              </div>
+              <span
+                className={`rounded-full px-2.5 py-1 text-xs font-semibold ${check.state === 'Healthy' ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'}`}
+              >
+                {check.state}
+              </span>
+            </div>
+          </article>
+        ))}
+      </div>
+      <article className="panel overflow-hidden">
+        <div className="border-b border-slate-100 px-5 py-4">
+          <h2 className="font-semibold">Scan history</h2>
+          <p className="text-xs text-slate-500">
+            Provider, market date, counts, and status are retained for replay.
+          </p>
+        </div>
+        {runs.length ? (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[700px] text-left">
+              <thead className="table-head">
+                <tr>
+                  {[
+                    'Run time',
+                    'Market date',
+                    'Provider',
+                    'Universe',
+                    'Qualified',
+                    'Status',
+                  ].map((h) => (
+                    <th key={h}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {runs.map((run, i) => (
+                  <tr key={run.id ?? i} className="border-t border-slate-100">
+                    <td className="table-cell">
+                      {new Date(run.createdAt).toLocaleString('en-IN')}
+                    </td>
+                    <td className="table-cell">{run.marketDate}</td>
+                    <td className="table-cell">{run.provider}</td>
+                    <td className="table-cell">{run.universeCount}</td>
+                    <td className="table-cell">{run.qualifiedCount}</td>
+                    <td className="table-cell text-emerald-700">
+                      {run.status}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="p-6 text-sm text-slate-500">
+            No saved scan runs yet. Current provider: {provider}.
+          </div>
+        )}
+      </article>
+    </div>
+  );
+}
+
+function SettingsView({
+  value,
+  onChange,
+  onSave,
+  persistent,
+}: {
+  value: Settings;
+  onChange: (s: Settings) => void;
+  onSave: () => void;
+  persistent: boolean;
+}) {
+  const numberField = (key: keyof Settings, label: string, help: string) => (
+    <label className="block">
+      <span className="text-sm font-medium">{label}</span>
+      <input
+        type="number"
+        min="0"
+        value={Number(value[key])}
+        onChange={(e) => onChange({ ...value, [key]: Number(e.target.value) })}
+        className="mt-2 h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm outline-none focus:border-emerald-500"
+      />
+      <span className="mt-1 block text-xs text-slate-500">{help}</span>
+    </label>
+  );
+  return (
+    <div className="space-y-5">
+      <div>
+        <h1 className="page-title">Settings</h1>
+        <p className="page-subtitle">
+          Change capital and risk limits without changing the scoring evidence
+          or historical snapshots.
+        </p>
+      </div>
+      {!persistent && (
+        <div className="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+          <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+          Persistent storage is not available in this preview session. Settings
+          still apply until the page reloads.
+        </div>
+      )}
+      <div className="grid gap-5 xl:grid-cols-[1fr_1fr]">
+        <article className="panel p-5">
+          <h2 className="font-semibold">Capital & risk</h2>
+          <div className="mt-5 grid gap-5 sm:grid-cols-2">
+            {numberField(
+              'capital',
+              'Trading capital (₹)',
+              'Dynamic baseline used for capital allocation.',
+            )}
+            {numberField(
+              'perStockRisk',
+              'Suggested max risk / stock (₹)',
+              'Position size is reduced to stay at or below this amount.',
+            )}
+            {numberField(
+              'normalRisk',
+              'Normal total open risk (₹)',
+              'Warn when combined open risk exceeds this level.',
+            )}
+            {numberField(
+              'hardRisk',
+              'Hard total open risk (₹)',
+              'Block any paper trade that would exceed this ceiling.',
+            )}
+            {numberField(
+              'maxPositions',
+              'Maximum open positions',
+              'Portfolio-wide position count limit.',
+            )}
+            {numberField(
+              'maxSectorAllocation',
+              'Maximum sector allocation (%)',
+              'Concentration warning threshold.',
+            )}
+          </div>
+        </article>
+        <article className="space-y-5">
+          <div className="panel p-5">
+            <h2 className="font-semibold">Market-data provider</h2>
+            <p className="mt-1 text-sm text-slate-500">
+              Only one provider can be active. Historical evidence is retained
+              when switching.
+            </p>
+            <div className="mt-5 space-y-3">
+              <button
+                onClick={() => onChange({ ...value, provider: 'FREE_EOD' })}
+                className={`w-full rounded-xl border p-4 text-left ${value.provider === 'FREE_EOD' ? 'border-emerald-500 bg-emerald-50/60' : 'border-slate-200'}`}
+              >
+                <div className="flex items-center justify-between">
+                  <span className="font-semibold">Free end-of-day</span>
+                  <span
+                    className={`size-4 rounded-full border-4 ${value.provider === 'FREE_EOD' ? 'border-emerald-500' : 'border-slate-300'}`}
+                  />
+                </div>
+                <p className="mt-1 text-xs text-slate-500">
+                  Daily candles and after-close signals. Current prototype mode.
+                </p>
+              </button>
+              <button
+                onClick={() => onChange({ ...value, provider: 'KITE_CONNECT' })}
+                className={`w-full rounded-xl border p-4 text-left ${value.provider === 'KITE_CONNECT' ? 'border-blue-500 bg-blue-50/60' : 'border-slate-200'}`}
+              >
+                <div className="flex items-center justify-between">
+                  <span className="font-semibold">Zerodha Kite Connect</span>
+                  <span
+                    className={`size-4 rounded-full border-4 ${value.provider === 'KITE_CONNECT' ? 'border-blue-500' : 'border-slate-300'}`}
+                  />
+                </div>
+                <p className="mt-1 text-xs text-slate-500">
+                  Optional adapter. Credentials and subscription validation are
+                  required before activation.
+                </p>
+              </button>
+            </div>
+            {value.provider === 'KITE_CONNECT' && (
+              <div className="mt-4 rounded-xl bg-blue-50 p-4 text-sm text-blue-900">
+                <div className="flex gap-2">
+                  <LockKeyhole className="mt-0.5 size-4 shrink-0" />
+                  <p>
+                    Store the API key and secret as protected server variables.
+                    The daily Zerodha login remains interactive.
+                  </p>
+                </div>
+              </div>
+            )}
+          </div>
+          <div className="panel p-5">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="font-semibold">Future strategy modes</h2>
+                <p className="text-xs text-slate-500">
+                  Kept behind feature flags until separately validated.
+                </p>
+              </div>
+              <Switch aria-label="Future strategy modes disabled" disabled />
+            </div>
+            <div className="mt-4 flex gap-2">
+              <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-500">
+                Intraday · Coming later
+              </span>
+              <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-500">
+                F&O · Coming later
+              </span>
+            </div>
+          </div>
+        </article>
+      </div>
+      <div className="flex justify-end">
+        <Button size="lg" onClick={onSave}>
+          Save settings
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function OpportunityDialog({
+  stock,
+  watchlisted,
+  openRisk,
+  hardRisk,
+  onClose,
+  onToggleWatch,
+  onCreateTrade,
+}: {
+  stock: Opportunity | null;
+  watchlisted: boolean;
+  openRisk: number;
+  hardRisk: number;
+  onClose: () => void;
+  onToggleWatch: (s: string) => void;
+  onCreateTrade: (o: Opportunity) => void;
+}) {
+  if (!stock) return null;
+  const blocked =
+    stock.status === 'Watch' ||
+    stock.quantity < 1 ||
+    openRisk + stock.plannedRisk > hardRisk;
+  return (
+    <Dialog open={Boolean(stock)} onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="max-h-[92vh] overflow-y-auto sm:max-w-2xl">
+        <DialogHeader>
+          <div className="flex items-center gap-2">
+            <DialogTitle className="text-xl">
+              {stock.symbol} · {stock.name}
+            </DialogTitle>
+            <StatusPill status={stock.status} />
+          </div>
+          <DialogDescription>
+            {stock.sector} · {stock.setup} · EOD {marketDateLabel}
+          </DialogDescription>
+        </DialogHeader>
+        <div className="grid gap-5 sm:grid-cols-[1fr_180px]">
+          <div>
+            <div className="rounded-xl bg-emerald-50 p-4">
+              <p className="text-xs font-semibold uppercase tracking-wide text-emerald-800">
+                Bullish evidence
+              </p>
+              <p className="mt-2 text-sm leading-relaxed text-emerald-950">
+                {stock.thesis}
+              </p>
+            </div>
+            <div className="mt-4 rounded-xl bg-amber-50 p-4">
+              <p className="text-xs font-semibold uppercase tracking-wide text-amber-800">
+                Invalidation / caution
+              </p>
+              <p className="mt-2 text-sm leading-relaxed text-amber-950">
+                {stock.caution}
+              </p>
+            </div>
+          </div>
+          <div className="rounded-xl bg-slate-950 p-4 text-white">
+            <p className="text-xs text-slate-400">Composite score</p>
+            <p className="mt-1 text-4xl font-semibold">{stock.score}</p>
+            <div className="mt-4 text-emerald-400">
+              <MiniChart values={stock.prices} />
+            </div>
+            <p className="mt-2 text-xs text-slate-400">
+              Quality {stock.qualityScore.toFixed(1)} / 20
+            </p>
+          </div>
+        </div>
+        <div>
+          <h3 className="text-sm font-semibold">Score evidence</h3>
+          <div className="mt-3 grid gap-3 sm:grid-cols-2">
+            {stock.breakdown.map((item) => (
+              <div
+                key={item.label}
+                className="rounded-xl border border-slate-200 p-3"
+              >
+                <div className="flex justify-between text-xs">
+                  <span className="text-slate-500">{item.label}</span>
+                  <span className="font-semibold">
+                    {item.value.toFixed(1)} / {item.max}
+                  </span>
+                </div>
+                <Progress
+                  aria-label={`${item.label} ${item.value} out of ${item.max}`}
+                  value={(item.value / item.max) * 100}
+                  className="mt-2 [&_[data-slot=progress-indicator]]:bg-emerald-500"
+                />
+              </div>
+            ))}
+          </div>
+        </div>
+        <div>
+          <h3 className="text-sm font-semibold">Risk-defined trade plan</h3>
+          <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
+            {[
+              [
+                'Entry zone',
+                `${money(stock.entryLow, 2)}–${money(stock.entryHigh, 2)}`,
+              ],
+              ['Stop', money(stock.stop, 2)],
+              ['Target 1', money(stock.target1, 2)],
+              ['Target 2', money(stock.target2, 2)],
+              ['Quantity', `${stock.quantity} shares`],
+              ['Capital', money(stock.capitalRequired)],
+              ['Max loss', money(stock.plannedRisk)],
+              ['Reward:risk', `${stock.rewardRisk.toFixed(1)} : 1`],
+            ].map(([label, value]) => (
+              <div key={label} className="rounded-xl bg-slate-50 p-3">
+                <p className="text-xs text-slate-500">{label}</p>
+                <p className="mt-1 text-sm font-semibold">{value}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="flex items-center justify-between rounded-xl border border-slate-200 p-3 text-sm">
+          <span>
+            Market cap {money(stock.marketCapCr * 10000000)} · ROE {stock.roe}%
+            ·{' '}
+            {stock.isBank
+              ? 'Bank quality model'
+              : `D/E ${stock.debtEquity} · OPM ${stock.opm}%`}
+          </span>
+          <a
+            href={`https://www.tradingview.com/chart/?symbol=NSE%3A${encodeURIComponent(stock.symbol)}`}
+            target="_blank"
+            rel="noreferrer"
+            className="flex shrink-0 items-center gap-1 font-medium text-blue-700"
+          >
+            Chart <ExternalLink className="size-3.5" />
+          </a>
+        </div>
+        <DialogFooter className="sm:justify-between">
+          <Button variant="outline" onClick={() => onToggleWatch(stock.symbol)}>
+            <Star
+              className={watchlisted ? 'fill-current text-amber-500' : ''}
+            />
+            {watchlisted ? 'Remove watchlist' : 'Add watchlist'}
+          </Button>
+          <Button disabled={blocked} onClick={() => onCreateTrade(stock)}>
+            {blocked
+              ? stock.status === 'Watch'
+                ? 'Wait for trigger'
+                : 'Risk limit blocks entry'
+              : 'Create paper trade'}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
