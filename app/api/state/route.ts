@@ -61,7 +61,7 @@ export async function GET() {
       .order('created_at', { ascending: false }),
     supabase
       .from('paper_trades')
-      .select('id, symbol, setup, status, entry, stop, target, quantity, opened_at, closed_at, exit_price, notes')
+      .select('id, symbol, sector, setup, status, entry, stop, target, quantity, opened_at, closed_at, exit_price, notes')
       .eq('user_id', userId)
       .order('opened_at', { ascending: false }),
     supabase
@@ -85,6 +85,7 @@ export async function GET() {
     trades: (tradesResult.data ?? []).map((row) => ({
       id: row.id,
       symbol: row.symbol,
+      sector: row.sector,
       setup: row.setup,
       status: row.status,
       entry: row.entry,
@@ -121,7 +122,7 @@ export async function POST(request: Request) {
     if (
       !s || s.capital <= 0 || s.normalRisk <= 0 || s.hardRisk < s.normalRisk ||
       s.perStockRisk <= 0 || s.maxPositions < 1 || s.maxSectorAllocation <= 0 ||
-      s.maxSectorAllocation > 100 || !['FREE_EOD', 'KITE'].includes(s.provider)
+      s.maxSectorAllocation > 100 || !['FREE_EOD', 'KITE_CONNECT'].includes(s.provider)
     ) {
       return NextResponse.json({ error: 'Invalid risk settings' }, { status: 400 });
     }
@@ -179,47 +180,26 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Invalid trade plan' }, { status: 400 });
     }
 
-    const [settingsResult, exposureResult] = await Promise.all([
-      supabase.from('settings').select('hard_risk, max_positions').eq('user_id', userId).maybeSingle(),
-      supabase.from('paper_trades').select('entry, stop, quantity').eq('user_id', userId).eq('status', 'OPEN'),
-    ]);
-    const readError = settingsResult.error ?? exposureResult.error;
-    if (readError) return databaseError(readError.message);
-
-    const openTrades = exposureResult.data ?? [];
-    const openRisk = openTrades.reduce(
-      (sum, item) => sum + (item.entry - item.stop) * item.quantity,
-      0,
-    );
-    const hardRisk = settingsResult.data?.hard_risk ?? defaultSettings.hardRisk;
-    const maxPositions = settingsResult.data?.max_positions ?? defaultSettings.maxPositions;
-    const nextRisk = openRisk + (trade.entry - trade.stop) * trade.quantity;
-
-    if (nextRisk > hardRisk) {
-      return NextResponse.json({ error: 'Hard open-risk limit would be exceeded' }, { status: 409 });
+    const result = await supabase.rpc('create_paper_trade_atomic', {
+      p_symbol: trade.symbol,
+      p_sector: typeof body.sector === 'string' ? body.sector : 'Unknown',
+      p_setup: trade.setup,
+      p_entry: trade.entry,
+      p_stop: trade.stop,
+      p_target: trade.target,
+      p_quantity: trade.quantity,
+      p_notes: trade.notes ?? '',
+    });
+    if (result.error) {
+      const businessError = [
+        'already exists', 'limit', 'exceeded', 'Maximum', 'Invalid trade',
+      ].some((part) => result.error.message.includes(part));
+      return NextResponse.json(
+        { error: businessError ? result.error.message : 'Unable to save paper trade' },
+        { status: businessError ? 409 : 500 },
+      );
     }
-    if (openTrades.length >= maxPositions) {
-      return NextResponse.json({ error: 'Maximum open positions reached' }, { status: 409 });
-    }
-
-    const result = await supabase
-      .from('paper_trades')
-      .insert({
-        user_id: userId,
-        symbol: trade.symbol,
-        setup: trade.setup,
-        status: 'OPEN',
-        entry: trade.entry,
-        stop: trade.stop,
-        target: trade.target,
-        quantity: trade.quantity,
-        opened_at: now,
-        notes: trade.notes ?? '',
-      })
-      .select('id')
-      .single();
-    if (result.error) return databaseError(result.error.message);
-    return NextResponse.json({ ok: true, id: result.data.id });
+    return NextResponse.json({ ok: true, id: Number(result.data) });
   }
 
   if (action === 'closeTrade') {

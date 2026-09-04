@@ -18,7 +18,6 @@ import {
   LayoutDashboard,
   ListFilter,
   LoaderCircle,
-  LockKeyhole,
   RefreshCw,
   Search,
   Settings as SettingsIcon,
@@ -52,9 +51,7 @@ import { SignOutButton } from '@/components/sign-out-button';
 import {
   buildOpportunities,
   defaultSettings,
-  marketDate,
-  performanceSeries,
-  type MarketOverride,
+  type CandidateSnapshot,
   type Opportunity,
   type PaperTrade,
   type Settings,
@@ -83,6 +80,20 @@ type ScanRun = {
   qualifiedCount: number;
   createdAt: string;
 };
+type MarketMeta = {
+  runId: string;
+  marketDate: string;
+  status: string;
+  marketRegime: string;
+  universeCount: number;
+  receivedCount: number;
+  validatedCount: number;
+  qualifiedCount: number;
+  failedCount: number;
+  source: string;
+  warnings: string[];
+  stale: boolean;
+};
 
 const nav: { id: ViewId; label: string; icon: typeof LayoutDashboard }[] = [
   { id: 'dashboard', label: 'Morning brief', icon: LayoutDashboard },
@@ -100,10 +111,13 @@ const money = (value: number, digits = 0) =>
     currency: 'INR',
     maximumFractionDigits: digits,
   }).format(value);
-const marketDateLabel = new Intl.DateTimeFormat('en-IN', {
-  dateStyle: 'medium',
-  timeZone: 'Asia/Kolkata',
-}).format(new Date(`${marketDate}T12:00:00+05:30`));
+const formatMarketDate = (date: string | null | undefined) =>
+  date
+    ? new Intl.DateTimeFormat('en-IN', {
+        dateStyle: 'medium',
+        timeZone: 'Asia/Kolkata',
+      }).format(new Date(`${date}T12:00:00+05:30`))
+    : 'No validated scan';
 
 async function postState(
   payload: Record<string, unknown>,
@@ -233,14 +247,13 @@ export function TradingDashboard() {
   const [notice, setNotice] = useState<string | null>(null);
   const [settingsDraft, setSettingsDraft] = useState<Settings>(defaultSettings);
   const [persistent, setPersistent] = useState(true);
-  const [marketOverrides, setMarketOverrides] = useState<
-    Record<string, MarketOverride>
-  >({});
-  const [liveMarketDate, setLiveMarketDate] = useState<string | null>(null);
+  const [marketCandidates, setMarketCandidates] = useState<CandidateSnapshot[]>([]);
+  const [marketMeta, setMarketMeta] = useState<MarketMeta | null>(null);
+  const [marketError, setMarketError] = useState<string | null>(null);
 
   const opportunities = useMemo(
-    () => buildOpportunities(settings, marketOverrides),
-    [marketOverrides, settings],
+    () => buildOpportunities(settings, marketCandidates),
+    [marketCandidates, settings],
   );
   const qualified = opportunities.filter((o) => o.status !== 'Watch');
   const openTrades = trades.filter((t) => t.status === 'OPEN');
@@ -280,31 +293,40 @@ export function TradingDashboard() {
     return () => window.clearTimeout(timer);
   }, [loadState]);
 
-  useEffect(() => {
+  const loadMarket = useCallback(async () => {
     const controller = new AbortController();
-    const timer = window.setTimeout(() => {
-      void fetch('/api/market', {
+    try {
+      const response = await fetch('/api/market', {
         signal: controller.signal,
         cache: 'no-store',
-      })
-        .then(async (response) => {
-          if (!response.ok) throw new Error('market source unavailable');
-          return response.json() as Promise<{
-            market: Record<string, MarketOverride>;
-            asOf: string | null;
-          }>;
-        })
-        .then((data) => {
-          setMarketOverrides(data.market);
-          setLiveMarketDate(data.asOf);
-        })
-        .catch(() => undefined);
-    }, 0);
-    return () => {
-      window.clearTimeout(timer);
-      controller.abort();
-    };
+      });
+      const data = (await response.json()) as {
+        candidates?: CandidateSnapshot[];
+        meta?: MarketMeta;
+        history?: ScanRun[];
+        error?: string;
+      };
+      if (!response.ok || !data.meta) {
+        throw new Error(data.error || 'Validated market scan is unavailable');
+      }
+      setMarketCandidates(data.candidates ?? []);
+      setMarketMeta(data.meta);
+      setRuns(data.history ?? []);
+      setMarketError(null);
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        setMarketCandidates([]);
+        setMarketMeta(null);
+        setMarketError(error instanceof Error ? error.message : 'Market scan unavailable');
+      }
+    }
+    return () => controller.abort();
   }, []);
+
+  useEffect(() => {
+    // oxlint-disable-next-line react/react-compiler -- async initial synchronization with the market API
+    void loadMarket();
+  }, [loadMarket]);
 
   const toggleWatchlist = useCallback(
     async (symbol: string) => {
@@ -320,8 +342,15 @@ export function TradingDashboard() {
             : `${symbol} added to watchlist`,
         );
       } catch {
+        setWatchlist((current) =>
+          existed
+            ? current.includes(symbol)
+              ? current
+              : [...current, symbol]
+            : current.filter((item) => item !== symbol),
+        );
         setPersistent(false);
-        notify('Saved for this session; persistent storage is unavailable.');
+        notify('Watchlist update failed; the previous saved state was restored.');
       }
     },
     [notify, watchlist],
@@ -354,6 +383,7 @@ export function TradingDashboard() {
         const data = await postState({
           action: 'createTrade',
           trade: tempTrade,
+          sector: stock.sector,
         });
         setTrades((current) =>
           current.map((t) =>
@@ -364,6 +394,7 @@ export function TradingDashboard() {
         );
         notify(`Paper trade created for ${stock.symbol}`);
       } catch (error) {
+        setTrades((current) => current.filter((trade) => trade.id !== tempTrade.id));
         setPersistent(false);
         notify(
           error instanceof Error
@@ -402,7 +433,12 @@ export function TradingDashboard() {
         try {
           await postState({ action: 'closeTrade', id: trade.id, exitPrice });
         } catch {
+          setTrades((current) =>
+            current.map((item) => (item.id === trade.id ? trade : item)),
+          );
           setPersistent(false);
+          notify('Unable to close the paper trade. The saved position remains open.');
+          return;
         }
       }
       notify(`${trade.symbol} paper trade closed at ${money(exitPrice, 2)}`);
@@ -412,25 +448,19 @@ export function TradingDashboard() {
 
   const runScan = useCallback(async () => {
     setScanState('running');
-    await new Promise((resolve) => window.setTimeout(resolve, 900));
-    const run = {
-      marketDate,
-      provider: settings.provider,
-      status: 'COMPLETED',
-      universeCount: 500,
-      qualifiedCount: qualified.length,
-      createdAt: new Date().toISOString(),
-    };
-    setRuns((current) => [run, ...current].slice(0, 10));
-    setScanState('complete');
     try {
-      await postState({ action: 'recordScan', ...run });
-    } catch {
-      setPersistent(false);
+      const response = await fetch('/api/pipeline/run', { method: 'POST' });
+      const data = (await response.json()) as { error?: string };
+      if (!response.ok) throw new Error(data.error || 'EOD pipeline failed');
+      await loadMarket();
+      setScanState('complete');
+      notify('Validated NSE EOD scan completed.');
+      window.setTimeout(() => setScanState('idle'), 1800);
+    } catch (error) {
+      setScanState('idle');
+      notify(error instanceof Error ? error.message : 'EOD scan failed');
     }
-    notify(`Scan complete: ${qualified.length} qualified setups`);
-    window.setTimeout(() => setScanState('idle'), 1800);
-  }, [notify, qualified.length, settings.provider]);
+  }, [loadMarket, notify]);
 
   const saveSettings = useCallback(async () => {
     if (settingsDraft.hardRisk < settingsDraft.normalRisk) {
@@ -586,18 +616,14 @@ export function TradingDashboard() {
             </p>
             <p className="text-sm font-medium">
               Latest completed market session ·{' '}
-              {liveMarketDate
-                ? new Intl.DateTimeFormat('en-IN', {
-                    dateStyle: 'medium',
-                  }).format(new Date(`${liveMarketDate}T12:00:00+05:30`))
-                : marketDateLabel}
+              {formatMarketDate(marketMeta?.marketDate)}
             </p>
           </div>
           <div className="flex items-center gap-2">
             <span className="hidden items-center gap-2 rounded-full bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-800 sm:flex">
-              <span className="size-2 rounded-full bg-emerald-500" />{' '}
-              {settings.provider === 'FREE_EOD' ? 'Free EOD' : 'Kite Connect'} ·
-              Ready
+              <span className={`size-2 rounded-full ${marketMeta && !marketMeta.stale ? 'bg-emerald-500' : 'bg-amber-500'}`} />{' '}
+              {marketMeta?.source ?? 'NSE EOD'} ·{' '}
+              {marketMeta ? (marketMeta.stale ? 'Stale' : 'Validated') : 'Unavailable'}
             </span>
             <Button
               variant="outline"
@@ -639,6 +665,8 @@ export function TradingDashboard() {
               onRunScan={runScan}
               onReview={setSelected}
               onViewAll={() => setView('opportunities')}
+              marketMeta={marketMeta}
+              marketError={marketError}
             />
           )}
           {view === 'opportunities' && (
@@ -678,6 +706,7 @@ export function TradingDashboard() {
               provider={settings.provider}
               onRunScan={runScan}
               scanState={scanState}
+              marketMeta={marketMeta}
             />
           )}
           {view === 'settings' && (
@@ -721,6 +750,8 @@ function DashboardView({
   onRunScan,
   onReview,
   onViewAll,
+  marketMeta,
+  marketError,
 }: {
   opportunities: Opportunity[];
   qualified: Opportunity[];
@@ -732,8 +763,16 @@ function DashboardView({
   onRunScan: () => void;
   onReview: (o: Opportunity) => void;
   onViewAll: () => void;
+  marketMeta: MarketMeta | null;
+  marketError: string | null;
 }) {
   const top = opportunities.slice(0, 4);
+  const dataHealthy = Boolean(
+    marketMeta &&
+      !marketMeta.stale &&
+      marketMeta.status === 'COMPLETED' &&
+      marketMeta.validatedCount >= Math.floor(marketMeta.universeCount * 0.9),
+  );
   return (
     <div className="space-y-6">
       <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
@@ -742,7 +781,9 @@ function DashboardView({
             Morning brief
           </p>
           <h1 className="mt-1 text-3xl font-semibold tracking-[-.035em] md:text-4xl">
-            {qualified.length
+            {marketError
+              ? 'Market scan unavailable.'
+              : qualified.length
               ? `${qualified.length} setups deserve attention.`
               : 'No qualified trade today.'}
           </h1>
@@ -766,16 +807,16 @@ function DashboardView({
             ? 'Scanning 500 stocks…'
             : scanState === 'complete'
               ? 'Scan complete'
-              : 'Run morning scan'}
+              : 'Refresh NSE scan'}
         </Button>
       </div>
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <MetricCard
           label="Market regime"
-          value="Bullish"
-          note="Nifty 500 trend and breadth supportive"
+          value={marketMeta?.marketRegime ?? 'Unavailable'}
+          note="Nifty 500 50/200-day trend plus universe breadth"
           icon={Gauge}
-          tone="emerald"
+          tone={marketMeta?.marketRegime === 'Bullish' ? 'emerald' : 'amber'}
         />
         <MetricCard
           label="Qualified setups"
@@ -843,31 +884,42 @@ function DashboardView({
           <article className="panel p-5">
             <div className="flex items-center justify-between">
               <h2 className="font-semibold">Data readiness</h2>
-              <span className="rounded-full bg-emerald-50 px-2 py-1 text-xs font-semibold text-emerald-700">
-                Healthy
+              <span className={`rounded-full px-2 py-1 text-xs font-semibold ${dataHealthy ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'}`}>
+                {dataHealthy ? 'Healthy' : 'Review'}
               </span>
             </div>
             <dl className="mt-4 space-y-3 text-sm">
               <div className="flex justify-between">
                 <dt className="text-slate-500">Latest candle</dt>
-                <dd className="font-medium">{marketDateLabel}</dd>
+                <dd className="font-medium">{formatMarketDate(marketMeta?.marketDate)}</dd>
               </div>
               <div className="flex justify-between">
                 <dt className="text-slate-500">Universe</dt>
-                <dd className="font-medium">Nifty 500</dd>
+                <dd className="font-medium">{marketMeta?.universeCount ?? '—'} symbols</dd>
               </div>
               <div className="flex justify-between">
                 <dt className="text-slate-500">Validated</dt>
-                <dd className="font-medium">498 / 500</dd>
+                <dd className="font-medium">
+                  {marketMeta ? `${marketMeta.validatedCount} / ${marketMeta.universeCount}` : '—'}
+                </dd>
               </div>
             </dl>
           </article>
         </aside>
       </div>
+      {(marketError || marketMeta?.warnings?.length) && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950">
+          <p className="font-semibold">Evidence requiring review</p>
+          <ul className="mt-2 list-disc space-y-1 pl-5">
+            {marketError && <li>{marketError}</li>}
+            {marketMeta?.warnings.map((warning) => <li key={warning}>{warning}</li>)}
+          </ul>
+        </div>
+      )}
       <p className="text-xs leading-relaxed text-slate-500">
-        Research support only. The prototype currently uses a representative
-        validated EOD snapshot; connect an approved live EOD feed before relying
-        on fresh prices. Verify data and orders independently.
+        Research support only. Prices and index evidence come from NSE end-of-day
+        archives; fundamentals must be imported with their source date. Confirm
+        current price, corporate actions, and orders independently.
       </p>
     </div>
   );
@@ -1338,6 +1390,16 @@ function JournalView({
     (sum, t) => sum + ((t.exitPrice ?? t.entry) - t.entry) * t.quantity,
     0,
   );
+  const journalSeries = [...closedTrades]
+    .sort((a, b) =>
+      String(a.closedAt ?? '').localeCompare(String(b.closedAt ?? '')),
+    )
+    .reduce<{ trade: string; pnl: number }[]>((series, trade, index) => {
+      const previous = series.at(-1)?.pnl ?? 0;
+      const realised = ((trade.exitPrice ?? trade.entry) - trade.entry) * trade.quantity;
+      series.push({ trade: `#${index + 1}`, pnl: Number((previous + realised).toFixed(2)) });
+      return series;
+    }, []);
   return (
     <div className="space-y-5">
       <div>
@@ -1353,18 +1415,18 @@ function JournalView({
             <div>
               <h2 className="font-semibold">Paper strategy curve</h2>
               <p className="text-xs text-slate-500">
-                Illustrative validation series until enough journal trades exist
+                Cumulative realised P&amp;L from your closed paper trades
               </p>
             </div>
-            <span className="flex items-center gap-1 text-sm font-semibold text-emerald-700">
-              <ArrowUpRight className="size-4" /> +7.4%
+            <span className={`flex items-center gap-1 text-sm font-semibold ${pnl >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
+              <ArrowUpRight className="size-4" /> {money(pnl)}
             </span>
           </div>
-          <div className="mt-5 h-64">
+          {journalSeries.length ? <div className="mt-5 h-64">
             <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={performanceSeries}>
+              <LineChart data={journalSeries}>
                 <XAxis
-                  dataKey="month"
+                  dataKey="trade"
                   axisLine={false}
                   tickLine={false}
                   tick={{ fontSize: 12, fill: '#64748b' }}
@@ -1379,22 +1441,18 @@ function JournalView({
                 />
                 <Line
                   type="monotone"
-                  dataKey="strategy"
+                  dataKey="pnl"
                   stroke="#059669"
                   strokeWidth={3}
                   dot={false}
                 />
-                <Line
-                  type="monotone"
-                  dataKey="benchmark"
-                  stroke="#94a3b8"
-                  strokeWidth={2}
-                  strokeDasharray="4 4"
-                  dot={false}
-                />
               </LineChart>
             </ResponsiveContainer>
-          </div>
+          </div> : (
+            <div className="mt-5 grid h-64 place-items-center rounded-xl bg-slate-50 text-sm text-slate-500">
+              Close a paper trade to start the realised P&amp;L curve.
+            </div>
+          )}
         </article>
         <article className="panel p-5">
           <h2 className="font-semibold">Journal summary</h2>
@@ -1475,32 +1533,47 @@ function HealthView({
   provider,
   onRunScan,
   scanState,
+  marketMeta,
 }: {
   runs: ScanRun[];
   provider: string;
   onRunScan: () => void;
   scanState: string;
+  marketMeta: MarketMeta | null;
 }) {
+  const fundamentalsWarning = marketMeta?.warnings.find((warning) =>
+    warning.toLowerCase().includes('fundamental'),
+  );
+  const priceHealthy = Boolean(
+    marketMeta && marketMeta.receivedCount >= Math.floor(marketMeta.universeCount * 0.9),
+  );
+  const historyHealthy = marketMeta?.status === 'COMPLETED';
   const checks = [
     {
       label: 'Price snapshot',
-      state: 'Healthy',
-      detail: `498 of 500 symbols validated for ${marketDateLabel}`,
+      state: priceHealthy ? 'Healthy' : 'Review',
+      detail: marketMeta
+        ? `${marketMeta.receivedCount} of ${marketMeta.universeCount} NSE symbols received for ${formatMarketDate(marketMeta.marketDate)}`
+        : 'No NSE price snapshot has been saved yet',
     },
     {
-      label: 'Corporate actions',
-      state: 'Healthy',
-      detail: 'Adjustments and symbol mapping passed',
+      label: 'Indicator history',
+      state: historyHealthy ? 'Healthy' : 'Review',
+      detail: marketMeta
+        ? `${marketMeta.validatedCount} symbols have enough rolling history for validated indicators`
+        : 'Run the historical backfill before publishing signals',
     },
     {
       label: 'Fundamentals',
-      state: 'Review',
-      detail: '2 symbols omitted because required values are stale',
+      state: fundamentalsWarning ? 'Review' : marketMeta ? 'Healthy' : 'Review',
+      detail: fundamentalsWarning ?? 'Required fundamental fields passed their freshness gates',
     },
     {
-      label: 'News & events',
-      state: 'Healthy',
-      detail: 'Morning event refresh completed',
+      label: 'Source freshness',
+      state: marketMeta && !marketMeta.stale ? 'Healthy' : 'Review',
+      detail: marketMeta
+        ? `${marketMeta.source}; ${marketMeta.stale ? 'the latest snapshot is stale' : 'latest snapshot is within the freshness window'}`
+        : 'No source run is available',
     },
   ];
   return (
@@ -1573,7 +1646,7 @@ function HealthView({
                     <td className="table-cell">{run.provider}</td>
                     <td className="table-cell">{run.universeCount}</td>
                     <td className="table-cell">{run.qualifiedCount}</td>
-                    <td className="table-cell text-emerald-700">
+                    <td className={`table-cell ${run.status === 'COMPLETED' ? 'text-emerald-700' : 'text-amber-700'}`}>
                       {run.status}
                     </td>
                   </tr>
@@ -1686,36 +1759,25 @@ function SettingsView({
                   />
                 </div>
                 <p className="mt-1 text-xs text-slate-500">
-                  Daily candles and after-close signals. Current prototype mode.
+                  Official NSE daily candles and after-close signals. Active pipeline.
                 </p>
               </button>
               <button
-                onClick={() => onChange({ ...value, provider: 'KITE_CONNECT' })}
-                className={`w-full rounded-xl border p-4 text-left ${value.provider === 'KITE_CONNECT' ? 'border-blue-500 bg-blue-50/60' : 'border-slate-200'}`}
+                disabled
+                className="w-full cursor-not-allowed rounded-xl border border-slate-200 p-4 text-left opacity-60"
               >
                 <div className="flex items-center justify-between">
                   <span className="font-semibold">Zerodha Kite Connect</span>
                   <span
-                    className={`size-4 rounded-full border-4 ${value.provider === 'KITE_CONNECT' ? 'border-blue-500' : 'border-slate-300'}`}
+                    className="size-4 rounded-full border-4 border-slate-300"
                   />
                 </div>
                 <p className="mt-1 text-xs text-slate-500">
-                  Optional adapter. Credentials and subscription validation are
-                  required before activation.
+                  Planned adapter. It remains disabled until authentication,
+                  token refresh, and data-parity tests are implemented.
                 </p>
               </button>
             </div>
-            {value.provider === 'KITE_CONNECT' && (
-              <div className="mt-4 rounded-xl bg-blue-50 p-4 text-sm text-blue-900">
-                <div className="flex gap-2">
-                  <LockKeyhole className="mt-0.5 size-4 shrink-0" />
-                  <p>
-                    Store the API key and secret as protected server variables.
-                    The daily Zerodha login remains interactive.
-                  </p>
-                </div>
-              </div>
-            )}
           </div>
           <div className="panel p-5">
             <div className="flex items-center justify-between">
@@ -1780,7 +1842,7 @@ function OpportunityDialog({
             <StatusPill status={stock.status} />
           </div>
           <DialogDescription>
-            {stock.sector} · {stock.setup} · EOD {marketDateLabel}
+            {stock.sector} · {stock.setup} · EOD {formatMarketDate(stock.asOfDate)}
           </DialogDescription>
         </DialogHeader>
         <div className="grid gap-5 sm:grid-cols-[1fr_180px]">
@@ -1861,11 +1923,13 @@ function OpportunityDialog({
         </div>
         <div className="flex items-center justify-between rounded-xl border border-slate-200 p-3 text-sm">
           <span>
-            Market cap {money(stock.marketCapCr * 10000000)} · ROE {stock.roe}%
-            ·{' '}
+            {stock.marketCapCr === null
+              ? 'Market cap unavailable'
+              : `Market cap ${money(stock.marketCapCr * 10000000)}`}
+            {' · '}ROE {stock.roe === null ? 'unavailable' : `${stock.roe}%`} ·{' '}
             {stock.isBank
               ? 'Bank quality model'
-              : `D/E ${stock.debtEquity} · OPM ${stock.opm}%`}
+              : `D/E ${stock.debtEquity ?? 'unavailable'} · OPM ${stock.opm === null ? 'unavailable' : `${stock.opm}%`}`}
           </span>
           <a
             href={`https://www.tradingview.com/chart/?symbol=NSE%3A${encodeURIComponent(stock.symbol)}`}
