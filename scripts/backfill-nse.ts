@@ -1,4 +1,4 @@
-import { loadEnvConfig } from '@next/env';
+import nextEnv from '@next/env';
 
 import { appendCandle } from '../lib/market/indicators';
 import {
@@ -16,6 +16,7 @@ import {
 import type { Candle } from '../lib/market/types';
 import { createAdminClient } from '../lib/supabase/admin';
 
+const { loadEnvConfig } = nextEnv;
 loadEnvConfig(process.cwd());
 
 const TARGET_SESSIONS = 260;
