@@ -168,6 +168,9 @@ export function scoreCandidate(
     relativeVolume20: technical.relativeVolume20,
     rsi14: technical.rsi14,
     macdHistogram: technical.macdHistogram,
+    support: technical.support20,
+    resistance: technical.prior20High,
+    high52Week: technical.high52Week,
     breakdown: [
       { label: 'Trend', value: round(trend), max: 25 },
       { label: 'Momentum', value: round(momentum), max: 15 },

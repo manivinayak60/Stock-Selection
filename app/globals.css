@@ -50,6 +50,10 @@
 
 body {
   font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
+  background-image:
+    radial-gradient(circle at 82% -12%, rgb(16 185 129 / 0.08), transparent 28rem),
+    linear-gradient(180deg, #f8fafc 0%, var(--canvas) 38rem);
+  background-attachment: fixed;
 }
 
 :root {
@@ -105,7 +109,7 @@ body {
 
 @layer components {
   .panel {
-    @apply rounded-2xl border border-slate-200 bg-white shadow-[0_1px_2px_rgba(15,23,42,.03)];
+    @apply rounded-2xl border border-slate-200/90 bg-white shadow-[0_10px_35px_rgba(15,23,42,.045),0_1px_2px_rgba(15,23,42,.04)];
   }
   .page-title {
     @apply text-3xl font-semibold tracking-[-.035em] md:text-4xl;

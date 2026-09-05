@@ -122,7 +122,8 @@ export async function POST(request: Request) {
     if (
       !s || s.capital <= 0 || s.normalRisk <= 0 || s.hardRisk < s.normalRisk ||
       s.perStockRisk <= 0 || s.maxPositions < 1 || s.maxSectorAllocation <= 0 ||
-      s.maxSectorAllocation > 100 || !['FREE_EOD', 'KITE_CONNECT'].includes(s.provider)
+      s.maxSectorAllocation > 100 ||
+      !['FREE_EOD', 'KITE_CONNECT', 'GROWW_CONNECT'].includes(s.provider)
     ) {
       return NextResponse.json({ error: 'Invalid risk settings' }, { status: 400 });
     }

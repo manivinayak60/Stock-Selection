@@ -246,7 +246,7 @@ export async function runDailyPipeline(admin: SupabaseClient, now = new Date()) 
     appendCandle(states.get('NIFTY500') ?? [], session.benchmark, STATE_LIMIT),
   );
   await persistStates(admin, states);
-  return createScan(
+  const result = await createScan(
     admin,
     universe,
     states,
@@ -254,4 +254,7 @@ export async function runDailyPipeline(admin: SupabaseClient, now = new Date()) 
     equities.size,
     session.failures,
   );
+  const pruned = await admin.rpc('prune_swing_signal_history');
+  if (pruned.error) console.warn(`History retention cleanup skipped: ${pruned.error.message}`);
+  return result;
 }

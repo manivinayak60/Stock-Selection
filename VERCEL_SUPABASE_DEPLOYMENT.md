@@ -28,6 +28,8 @@ The migrations are:
 
 `supabase/migrations/202609040002_market_pipeline.sql`
 
+`supabase/migrations/202609050001_broker_connections_and_retention.sql`
+
 From the `webapp` folder, run:
 
 ```powershell
@@ -60,6 +62,9 @@ NEXT_PUBLIC_SUPABASE_URL=https://YOUR_PROJECT_REF.supabase.co
 NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=YOUR_PUBLISHABLE_KEY
 SUPABASE_SERVICE_ROLE_KEY=YOUR_SERVICE_ROLE_KEY
 CRON_SECRET=GENERATE_A_LONG_RANDOM_VALUE
+BROKER_TOKEN_ENCRYPTION_KEY=GENERATE_AT_LEAST_32_RANDOM_CHARACTERS
+KITE_API_KEY=OPTIONAL_ZERODHA_APP_KEY
+KITE_API_SECRET=OPTIONAL_ZERODHA_APP_SECRET
 ```
 
 Then run:
@@ -84,6 +89,9 @@ Open `http://localhost:3000`, sign in, change one setting, refresh, and confirm 
    - `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`
    - `SUPABASE_SERVICE_ROLE_KEY`
    - `CRON_SECRET`
+   - `BROKER_TOKEN_ENCRYPTION_KEY`
+   - `KITE_API_KEY` (only when Zerodha is enabled)
+   - `KITE_API_SECRET` (only when Zerodha is enabled)
 7. Click **Deploy**.
 
 If the environment variables are added after the first deployment, trigger a redeploy so the Next.js build receives them.
@@ -110,7 +118,7 @@ The scanner intentionally leaves a stock at **Watch** when required fundamentals
 
 ## 9. Daily schedule
 
-`vercel.json` schedules `/api/pipeline/run` at 17:00 UTC (22:30 IST), Monday–Friday. Vercel sends `Authorization: Bearer <CRON_SECRET>`. A signed-in user can also run the same job from **Refresh NSE scan**.
+`vercel.json` schedules `/api/pipeline/run` at 17:00 UTC (22:30 IST), Monday–Friday. Vercel sends `Authorization: Bearer <CRON_SECRET>`. A signed-in user can also run the same job from **Settings -> Sync latest EOD now**. The button is safe to use after market close or before the 9:00 AM review; re-running the same market date uses upserts rather than creating duplicate candles.
 
 The 9:00 AM view therefore uses the most recently completed NSE session. If the latest scan is old or incomplete, the UI marks it stale/review instead of silently substituting sample data.
 
@@ -127,9 +135,30 @@ Open the Vercel URL in a private/incognito window and verify:
 7. Data health shows real universe, received, and validated counts.
 8. Clicking the avatar signs you out and returns to `/login`.
 
+## Optional live-provider setup
+
+The selected live provider changes only the current-price overlay. The ranking, support, resistance, breakout evidence, and fallback continue to use the latest validated NSE EOD scan.
+
+### Zerodha Kite Connect
+
+1. Subscribe to Kite Connect and create an app in the Zerodha developer console.
+2. Set its redirect URL to `https://YOUR_VERCEL_DOMAIN/api/brokers/zerodha/callback`.
+3. Add `KITE_API_KEY`, `KITE_API_SECRET`, and `BROKER_TOKEN_ENCRYPTION_KEY` in Vercel and redeploy.
+4. In Settings, click **Connect Zerodha** and complete the Zerodha login each trading day.
+5. Select Zerodha and save settings. The dashboard refreshes up to the top 50 EOD-ranked symbols every 30 seconds while open.
+
+### Groww Connect
+
+1. Enable Groww Trading APIs and generate the current day's access token.
+2. Add `BROKER_TOKEN_ENCRYPTION_KEY` in Vercel and redeploy.
+3. In Settings, click **Connect Groww**, paste the token, then select Groww and save settings.
+
+Broker access tokens are encrypted with AES-256-GCM before storage. They are never sent to the browser after being saved. Expired or disconnected sessions automatically leave the validated EOD result available.
+
 ## Free-tier operational notes
 
 - The scanner fails closed when NSE data is unavailable; it never falls back to fabricated or bundled prices.
-- Keep Kite disabled until a later Kite Connect integration is added and subscribed.
+- EOD and benchmark candles older than three years and scan snapshots older than 90 days are pruned after a successful sync. This keeps the free database focused on the history needed by the scoring model.
+- Live ticks are not stored, avoiding unnecessary Supabase growth.
 - Supabase free projects may pause after inactivity; if the app stops loading saved data, check the Supabase project status first.
 - This is a research and paper-trading tool, not an automatic order-placement system or a guarantee of returns.

@@ -17,7 +17,8 @@ const technical: TechnicalSnapshot = {
   sma200: 90, ema20: 111, rsi14: 61, atr14: 3, macd: 4, macdSignal: 2,
   macdHistogram: 2, roc20: 8, roc63: 18, relativeStrength63: 8,
   relativeVolume20: 1.7, medianTurnoverLacs20: 1_500, prior20High: 118,
-  high52Week: 125, breakout20: true, prices: [105, 107, 109, 111, 114, 120],
+  support20: 104, high52Week: 125, breakout20: true,
+  prices: [105, 107, 109, 111, 114, 120],
 };
 const regime: MarketRegime = {
   label: 'Bullish', score: 10, benchmarkClose: 20_000, benchmarkSma50: 19_000,
@@ -34,6 +35,8 @@ void test('a technically and fundamentally valid candidate can qualify', () => {
   assert.notEqual(candidate.status, 'Watch');
   assert.equal(candidate.evidenceStatus, 'VALID');
   assert.ok(candidate.score <= 100);
+  assert.equal(candidate.support, 104);
+  assert.equal(candidate.resistance, 118);
 });
 
 void test('missing fundamentals fail closed even with strong technicals', () => {

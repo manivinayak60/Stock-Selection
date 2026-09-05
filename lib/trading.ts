@@ -1,4 +1,4 @@
-export type ProviderMode = 'FREE_EOD' | 'KITE_CONNECT';
+export type ProviderMode = 'FREE_EOD' | 'KITE_CONNECT' | 'GROWW_CONNECT';
 
 export type Settings = {
   capital: number;
@@ -46,7 +46,33 @@ export type CandidateSnapshot = {
   relativeVolume20: number;
   rsi14: number;
   macdHistogram: number;
+  support: number;
+  resistance: number;
+  high52Week: number;
+  livePrice?: number;
+  liveChangePercent?: number | null;
+  liveUpdatedAt?: string;
+  liveProvider?: Exclude<ProviderMode, 'FREE_EOD'>;
   breakdown: { label: string; value: number; max: number }[];
+};
+
+export type LiveQuote = {
+  symbol: string;
+  lastPrice: number;
+  changePercent: number | null;
+  volume: number | null;
+  updatedAt: string;
+  provider: Exclude<ProviderMode, 'FREE_EOD'>;
+};
+
+export type BrokerConnectionStatus = {
+  provider: Exclude<ProviderMode, 'FREE_EOD'>;
+  configured: boolean;
+  connected: boolean;
+  expired: boolean;
+  accountId: string | null;
+  expiresAt: string | null;
+  lastVerifiedAt: string | null;
 };
 
 export type Opportunity = CandidateSnapshot & {
@@ -95,9 +121,10 @@ export function buildOpportunities(
 ): Opportunity[] {
   return candidates
     .map((candidate) => {
-      const stopDistance = Math.max(candidate.atr * 1.65, candidate.close * 0.032);
-      const entryLow = candidate.close - candidate.atr * 0.3;
-      const entryHigh = candidate.close + candidate.atr * 0.18;
+      const planningPrice = candidate.livePrice ?? candidate.close;
+      const stopDistance = Math.max(candidate.atr * 1.65, planningPrice * 0.032);
+      const entryLow = planningPrice - candidate.atr * 0.3;
+      const entryHigh = planningPrice + candidate.atr * 0.18;
       const stop = entryLow - stopDistance;
       const riskPerShare = entryHigh - stop;
       const quantity = Math.max(
@@ -109,6 +136,7 @@ export function buildOpportunities(
       );
       return {
         ...candidate,
+        close: planningPrice,
         entryLow: round(entryLow),
         entryHigh: round(entryHigh),
         stop: round(stop),

@@ -100,6 +100,7 @@ export function calculateTechnicalSnapshot(
   const macdSignal = signalValues.at(-1)!;
   const priorVolumes = candles.slice(-21, -1).map((item) => item.volume);
   const prior20High = Math.max(...candles.slice(-21, -1).map((item) => item.high));
+  const support20 = Math.min(...candles.slice(-20).map((item) => item.low));
   const roc20 = (latest.close / closes.at(-21)! - 1) * 100;
   const roc63 = (latest.close / closes.at(-64)! - 1) * 100;
   const benchmarkRoc63 = (benchmarkLatest / benchmarkStart - 1) * 100;
@@ -127,6 +128,7 @@ export function calculateTechnicalSnapshot(
     ),
     prior20High: round(prior20High),
     high52Week: round(Math.max(...candles.slice(-252).map((item) => item.high))),
+    support20: round(support20),
     breakout20: latest.close > prior20High,
     prices: closes.slice(-12).map((value) => round(value, 2)),
   };

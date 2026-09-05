@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import Link from 'next/link';
 import {
   Activity,
   AlertTriangle,
@@ -15,10 +16,12 @@ import {
   ExternalLink,
   Gauge,
   HeartPulse,
+  Info,
   LayoutDashboard,
   ListFilter,
   LoaderCircle,
   RefreshCw,
+  Radio,
   Search,
   Settings as SettingsIcon,
   ShieldCheck,
@@ -35,7 +38,7 @@ import {
   YAxis,
 } from 'recharts';
 
-import { Button } from '@/components/ui/button';
+import { Button, buttonVariants } from '@/components/ui/button';
 import {
   Dialog,
   DialogContent,
@@ -52,6 +55,8 @@ import {
   buildOpportunities,
   defaultSettings,
   type CandidateSnapshot,
+  type BrokerConnectionStatus,
+  type LiveQuote,
   type Opportunity,
   type PaperTrade,
   type Settings,
@@ -250,10 +255,35 @@ export function TradingDashboard() {
   const [marketCandidates, setMarketCandidates] = useState<CandidateSnapshot[]>([]);
   const [marketMeta, setMarketMeta] = useState<MarketMeta | null>(null);
   const [marketError, setMarketError] = useState<string | null>(null);
+  const [brokerConnections, setBrokerConnections] = useState<BrokerConnectionStatus[]>([]);
+  const [liveQuotes, setLiveQuotes] = useState<LiveQuote[]>([]);
+
+  const candidatesWithLivePrices = useMemo(() => {
+    const connectionReady = brokerConnections.some(
+      (item) => item.provider === settings.provider && item.connected,
+    );
+    const quotes = new Map(
+      (settings.provider === 'FREE_EOD' || !connectionReady ? [] : liveQuotes)
+        .filter((quote) => quote.provider === settings.provider)
+        .map((quote) => [quote.symbol, quote]),
+    );
+    return marketCandidates.map((candidate) => {
+      const quote = quotes.get(candidate.symbol);
+      return quote
+        ? {
+            ...candidate,
+            livePrice: quote.lastPrice,
+            liveChangePercent: quote.changePercent,
+            liveUpdatedAt: quote.updatedAt,
+            liveProvider: quote.provider,
+          }
+        : candidate;
+    });
+  }, [brokerConnections, liveQuotes, marketCandidates, settings.provider]);
 
   const opportunities = useMemo(
-    () => buildOpportunities(settings, marketCandidates),
-    [marketCandidates, settings],
+    () => buildOpportunities(settings, candidatesWithLivePrices),
+    [candidatesWithLivePrices, settings],
   );
   const qualified = opportunities.filter((o) => o.status !== 'Watch');
   const openTrades = trades.filter((t) => t.status === 'OPEN');
@@ -327,6 +357,55 @@ export function TradingDashboard() {
     // oxlint-disable-next-line react/react-compiler -- async initial synchronization with the market API
     void loadMarket();
   }, [loadMarket]);
+
+  const loadBrokerStatus = useCallback(async () => {
+    try {
+      const response = await fetch('/api/brokers/status', { cache: 'no-store' });
+      const data = await response.json() as {
+        connections?: BrokerConnectionStatus[];
+      };
+      if (response.ok) setBrokerConnections(data.connections ?? []);
+    } catch {
+      setBrokerConnections([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    // oxlint-disable-next-line react/react-compiler -- async synchronization with the broker status API
+    void loadBrokerStatus();
+  }, [loadBrokerStatus]);
+
+  useEffect(() => {
+    if (settings.provider === 'FREE_EOD') {
+      return;
+    }
+    const connection = brokerConnections.find((item) => item.provider === settings.provider);
+    if (!connection?.connected || !marketCandidates.length) {
+      return;
+    }
+    let stopped = false;
+    const refresh = async () => {
+      const symbols = marketCandidates.slice(0, 50).map((item) => item.symbol).join(',');
+      try {
+        const response = await fetch(
+          `/api/brokers/quotes?provider=${settings.provider}&symbols=${encodeURIComponent(symbols)}`,
+          { cache: 'no-store' },
+        );
+        const data = await response.json() as { quotes?: Omit<LiveQuote, 'provider'>[] };
+        if (response.ok && !stopped) {
+          setLiveQuotes((data.quotes ?? []).map((quote) => ({ ...quote, provider: settings.provider as Exclude<Settings['provider'], 'FREE_EOD'> })));
+        }
+      } catch {
+        if (!stopped) setLiveQuotes([]);
+      }
+    };
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 30_000);
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+    };
+  }, [brokerConnections, marketCandidates, settings.provider]);
 
   const toggleWatchlist = useCallback(
     async (symbol: string) => {
@@ -477,6 +556,36 @@ export function TradingDashboard() {
     }
   }, [notify, settingsDraft]);
 
+  const connectGroww = useCallback(async (accessToken: string) => {
+    const response = await fetch('/api/brokers/groww/connect', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ accessToken }),
+    });
+    const data = await response.json() as { error?: string };
+    if (!response.ok) throw new Error(data.error || 'Groww connection failed');
+    await loadBrokerStatus();
+    setSettingsDraft((current) => ({ ...current, provider: 'GROWW_CONNECT' }));
+    notify('Groww connected. Save settings to activate live prices.');
+  }, [loadBrokerStatus, notify]);
+
+  const disconnectLiveBroker = useCallback(async (
+    provider: 'KITE_CONNECT' | 'GROWW_CONNECT',
+  ) => {
+    const response = await fetch('/api/brokers/disconnect', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ provider }),
+    });
+    const data = await response.json() as { error?: string };
+    if (!response.ok) throw new Error(data.error || 'Unable to disconnect broker');
+    setSettingsDraft((current) => ({ ...current, provider: 'FREE_EOD' }));
+    if (settings.provider === provider) setSettings((current) => ({ ...current, provider: 'FREE_EOD' }));
+    setLiveQuotes([]);
+    await loadBrokerStatus();
+    notify('Broker disconnected. Free NSE EOD remains active.');
+  }, [loadBrokerStatus, notify, settings.provider]);
+
   useEffect(() => {
     const context =
       typeof document === 'undefined'
@@ -622,8 +731,11 @@ export function TradingDashboard() {
           <div className="flex items-center gap-2">
             <span className="hidden items-center gap-2 rounded-full bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-800 sm:flex">
               <span className={`size-2 rounded-full ${marketMeta && !marketMeta.stale ? 'bg-emerald-500' : 'bg-amber-500'}`} />{' '}
-              {marketMeta?.source ?? 'NSE EOD'} ·{' '}
-              {marketMeta ? (marketMeta.stale ? 'Stale' : 'Validated') : 'Unavailable'}
+              {settings.provider === 'FREE_EOD'
+                ? `${marketMeta?.source ?? 'NSE EOD'} · ${marketMeta ? (marketMeta.stale ? 'Stale' : 'Validated') : 'Unavailable'}`
+                : liveQuotes.length
+                  ? `${settings.provider === 'KITE_CONNECT' ? 'Zerodha' : 'Groww'} live · ${liveQuotes.length} quotes`
+                  : `${settings.provider === 'KITE_CONNECT' ? 'Zerodha' : 'Groww'} waiting · EOD fallback`}
             </span>
             <Button
               variant="outline"
@@ -715,6 +827,12 @@ export function TradingDashboard() {
               onChange={setSettingsDraft}
               onSave={saveSettings}
               persistent={persistent}
+              scanState={scanState}
+              marketMeta={marketMeta}
+              onRunScan={runScan}
+              brokerConnections={brokerConnections}
+              onConnectGroww={connectGroww}
+              onDisconnectBroker={disconnectLiveBroker}
             />
           )}
         </div>
@@ -1049,15 +1167,28 @@ function OpportunitiesView({
   onReview: (o: Opportunity) => void;
   onToggleWatch: (s: string) => void;
 }) {
+  const [explaining, setExplaining] = useState<Opportunity | null>(null);
   const matches = (stock: Opportunity) =>
     !filter ||
     `${stock.symbol} ${stock.name} ${stock.sector}`
       .toLowerCase()
       .includes(filter.toLowerCase());
-  const cards = (stocks: Opportunity[]) => (
+  const cards = (stocks: Opportunity[], emptyText: string) => {
+    const visible = stocks.filter(matches);
+    if (!visible.length) {
+      return (
+        <EmptyState
+          icon={Search}
+          title="No stocks in this group"
+          text={filter ? 'Try a different stock or sector search.' : emptyText}
+        />
+      );
+    }
+    return (
     <div className="grid gap-4 xl:grid-cols-2">
-      {stocks.filter(matches).map((stock) => (
-        <article key={stock.symbol} className="panel p-5">
+      {visible.map((stock) => (
+        <article key={stock.symbol} className="group relative overflow-hidden rounded-2xl border border-slate-200 bg-white p-5 shadow-[0_2px_5px_rgba(15,23,42,.04)] transition duration-200 hover:-translate-y-0.5 hover:border-emerald-200 hover:shadow-[0_18px_45px_rgba(15,23,42,.09)]">
+          <div className={`absolute inset-x-0 top-0 h-1 ${stock.score >= 70 ? 'bg-emerald-500' : stock.score >= 50 ? 'bg-amber-400' : 'bg-slate-300'}`} />
           <div className="flex items-start justify-between gap-3">
             <div>
               <div className="flex items-center gap-2">
@@ -1068,15 +1199,24 @@ function OpportunitiesView({
                 {stock.name} · {stock.sector}
               </p>
             </div>
-            <button
-              onClick={() => onToggleWatch(stock.symbol)}
-              aria-label={`${watchlist.includes(stock.symbol) ? 'Remove' : 'Add'} ${stock.symbol} ${watchlist.includes(stock.symbol) ? 'from' : 'to'} watchlist`}
-              className={`grid size-9 place-items-center rounded-lg border ${watchlist.includes(stock.symbol) ? 'border-amber-200 bg-amber-50 text-amber-600' : 'border-slate-200 text-slate-500'}`}
-            >
-              <Star
-                className={`size-4 ${watchlist.includes(stock.symbol) ? 'fill-current' : ''}`}
-              />
-            </button>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setExplaining(stock)}
+                aria-label={`Explain ${stock.setup} for ${stock.symbol}`}
+                className="grid size-9 place-items-center rounded-lg border border-blue-100 bg-blue-50 text-blue-700 transition hover:bg-blue-100"
+              >
+                <Info className="size-4" />
+              </button>
+              <button
+                onClick={() => onToggleWatch(stock.symbol)}
+                aria-label={`${watchlist.includes(stock.symbol) ? 'Remove' : 'Add'} ${stock.symbol} ${watchlist.includes(stock.symbol) ? 'from' : 'to'} watchlist`}
+                className={`grid size-9 place-items-center rounded-lg border ${watchlist.includes(stock.symbol) ? 'border-amber-200 bg-amber-50 text-amber-600' : 'border-slate-200 text-slate-500'}`}
+              >
+                <Star
+                  className={`size-4 ${watchlist.includes(stock.symbol) ? 'fill-current' : ''}`}
+                />
+              </button>
+            </div>
           </div>
           <div className="mt-5 grid grid-cols-[1fr_auto] items-end gap-4">
             <div>
@@ -1093,6 +1233,11 @@ function OpportunitiesView({
               <p className="mt-2 text-sm font-medium text-emerald-700">
                 {stock.setup}
               </p>
+              {stock.livePrice !== undefined && (
+                <p className="mt-1 flex items-center gap-1 text-xs font-semibold text-blue-700">
+                  <Radio className="size-3" /> Live {stock.liveProvider === 'KITE_CONNECT' ? 'Zerodha' : 'Groww'} price
+                </p>
+              )}
             </div>
             <div className="text-emerald-600">
               <MiniChart values={stock.prices} />
@@ -1129,7 +1274,11 @@ function OpportunitiesView({
         </article>
       ))}
     </div>
-  );
+    );
+  };
+  const qualifiedStocks = opportunities.filter((stock) => stock.status !== 'Watch');
+  const topScoreStocks = opportunities.filter((stock) => stock.score >= 70);
+  const nextScoreStocks = opportunities.filter((stock) => stock.score >= 50 && stock.score < 70);
   return (
     <div className="space-y-5">
       <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
@@ -1150,27 +1299,79 @@ function OpportunitiesView({
           />
         </label>
       </div>
-      <Tabs defaultValue="qualified">
-        <TabsList className="h-10 bg-white shadow-sm" variant="default">
-          <TabsTrigger value="qualified">Qualified</TabsTrigger>
+      <Tabs defaultValue={qualifiedStocks.length ? 'qualified' : topScoreStocks.length ? 'top' : 'next'}>
+        <TabsList className="h-auto flex-wrap bg-white p-1 shadow-sm" variant="default">
+          <TabsTrigger value="qualified">Qualified ({qualifiedStocks.length})</TabsTrigger>
+          <TabsTrigger value="top">Top score 70+ ({topScoreStocks.length})</TabsTrigger>
+          <TabsTrigger value="next">Next 50–69 ({nextScoreStocks.length})</TabsTrigger>
           <TabsTrigger value="companies">Companies</TabsTrigger>
           <TabsTrigger value="banks">Banks & financials</TabsTrigger>
           <TabsTrigger value="all">All screened</TabsTrigger>
         </TabsList>
         <TabsContent value="qualified" className="mt-4">
-          {cards(opportunities.filter((o) => o.status !== 'Watch'))}
+          {cards(qualifiedStocks, 'No stock currently passes every technical, liquidity, market-regime and fundamental quality gate.')}
+        </TabsContent>
+        <TabsContent value="top" className="mt-4">
+          {cards(topScoreStocks, 'No stock currently has a composite score of 70 or more.')}
+        </TabsContent>
+        <TabsContent value="next" className="mt-4">
+          {cards(nextScoreStocks, 'No developing setup currently has a score between 50 and 69.')}
         </TabsContent>
         <TabsContent value="companies" className="mt-4">
-          {cards(opportunities.filter((o) => !o.isBank))}
+          {cards(opportunities.filter((o) => !o.isBank), 'No company candidates are available in the latest scan.')}
         </TabsContent>
         <TabsContent value="banks" className="mt-4">
-          {cards(opportunities.filter((o) => o.isBank))}
+          {cards(opportunities.filter((o) => o.isBank), 'No bank or financial candidates are available in the latest scan.')}
         </TabsContent>
         <TabsContent value="all" className="mt-4">
-          {cards(opportunities)}
+          {cards(opportunities, 'Run the latest NSE EOD sync to build the opportunity list.')}
         </TabsContent>
       </Tabs>
+      <SetupInfoDialog stock={explaining} onClose={() => setExplaining(null)} />
     </div>
+  );
+}
+
+function SetupInfoDialog({ stock, onClose }: { stock: Opportunity | null; onClose: () => void }) {
+  if (!stock) return null;
+  const explanation = stock.setup === 'Confirmed breakout'
+    ? {
+        meaning: 'The latest closing price finished above the highest price reached during the previous 20 trading sessions.',
+        why: 'This suggests buyers were strong enough to move beyond a level that had repeatedly stopped the price.',
+        check: 'After market open, confirm that price stays near or above the breakout level and that volume remains healthy. Do not chase a large gap-up.',
+      }
+    : stock.setup === 'Pullback opportunity'
+      ? {
+          meaning: 'The larger trend is still rising, but price has moved back close to its 20-day average.',
+          why: 'A controlled pullback can provide a lower-risk entry than buying after a sharp rise.',
+          check: 'Look for price to hold the support area and turn upward. A close below support weakens the setup.',
+        }
+      : stock.setup === 'Momentum continuation'
+        ? {
+            meaning: 'The stock is already trending upward and momentum indicators remain positive.',
+            why: 'Existing buying strength may continue even though a fresh 20-day breakout has not occurred.',
+            check: 'Enter only inside the suggested range. Avoid the trade if momentum fades or price falls below support.',
+          }
+        : {
+            meaning: 'The stock has some positive evidence, but it has not completed a reliable entry trigger.',
+            why: 'Waiting prevents an early entry before buyers prove that resistance can be crossed.',
+            check: 'Keep it on the watchlist and wait for a confirmed breakout or a supported pullback.',
+          };
+  return (
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>{stock.setup}</DialogTitle>
+          <DialogDescription>A simple explanation for {stock.symbol}</DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3 text-sm leading-relaxed">
+          <div className="rounded-xl bg-blue-50 p-4"><p className="font-semibold text-blue-900">What it means</p><p className="mt-1 text-blue-950">{explanation.meaning}</p></div>
+          <div className="rounded-xl bg-emerald-50 p-4"><p className="font-semibold text-emerald-900">Why it matters</p><p className="mt-1 text-emerald-950">{explanation.why}</p></div>
+          <div className="rounded-xl bg-amber-50 p-4"><p className="font-semibold text-amber-900">What you should check</p><p className="mt-1 text-amber-950">{explanation.check}</p></div>
+        </div>
+        <DialogFooter><Button onClick={onClose}>Understood</Button></DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -1669,12 +1870,30 @@ function SettingsView({
   onChange,
   onSave,
   persistent,
+  scanState,
+  marketMeta,
+  onRunScan,
+  brokerConnections,
+  onConnectGroww,
+  onDisconnectBroker,
 }: {
   value: Settings;
   onChange: (s: Settings) => void;
   onSave: () => void;
   persistent: boolean;
+  scanState: string;
+  marketMeta: MarketMeta | null;
+  onRunScan: () => void;
+  brokerConnections: BrokerConnectionStatus[];
+  onConnectGroww: (accessToken: string) => Promise<void>;
+  onDisconnectBroker: (provider: 'KITE_CONNECT' | 'GROWW_CONNECT') => Promise<void>;
 }) {
+  const [growwDialogOpen, setGrowwDialogOpen] = useState(false);
+  const [growwToken, setGrowwToken] = useState('');
+  const [brokerBusy, setBrokerBusy] = useState(false);
+  const [brokerError, setBrokerError] = useState<string | null>(null);
+  const kite = brokerConnections.find((item) => item.provider === 'KITE_CONNECT');
+  const groww = brokerConnections.find((item) => item.provider === 'GROWW_CONNECT');
   const numberField = (key: keyof Settings, label: string, help: string) => (
     <label className="block">
       <span className="text-sm font-medium">{label}</span>
@@ -1704,6 +1923,31 @@ function SettingsView({
           still apply until the page reloads.
         </div>
       )}
+      <article className="overflow-hidden rounded-2xl border border-emerald-200 bg-gradient-to-br from-emerald-950 via-slate-950 to-slate-900 p-5 text-white shadow-[0_18px_60px_rgba(6,78,59,.16)]">
+        <div className="flex flex-col justify-between gap-5 md:flex-row md:items-center">
+          <div className="max-w-2xl">
+            <div className="flex items-center gap-2 text-sm font-semibold text-emerald-300">
+              <RefreshCw className="size-4" /> NSE end-of-day sync
+            </div>
+            <h2 className="mt-2 text-xl font-semibold">Refresh the bullish shortlist whenever you need it</h2>
+            <p className="mt-2 text-sm leading-relaxed text-slate-300">
+              Use this after the market closes or before your 9 AM review. It downloads the latest completed NSE session, updates indicators and rebuilds every score.
+            </p>
+            <p className="mt-3 text-xs text-slate-400">
+              Latest saved session: {formatMarketDate(marketMeta?.marketDate)} · Automatic weekday sync remains scheduled for 10:30 PM IST.
+            </p>
+          </div>
+          <Button
+            size="lg"
+            onClick={onRunScan}
+            disabled={scanState === 'running'}
+            className="h-12 shrink-0 bg-emerald-400 px-5 text-slate-950 hover:bg-emerald-300"
+          >
+            {scanState === 'running' ? <LoaderCircle className="animate-spin" /> : <RefreshCw />}
+            {scanState === 'running' ? 'Syncing NSE data…' : 'Sync latest EOD now'}
+          </Button>
+        </div>
+      </article>
       <div className="grid gap-5 xl:grid-cols-[1fr_1fr]">
         <article className="panel p-5">
           <h2 className="font-semibold">Capital & risk</h2>
@@ -1748,36 +1992,45 @@ function SettingsView({
               when switching.
             </p>
             <div className="mt-5 space-y-3">
-              <button
-                onClick={() => onChange({ ...value, provider: 'FREE_EOD' })}
-                className={`w-full rounded-xl border p-4 text-left ${value.provider === 'FREE_EOD' ? 'border-emerald-500 bg-emerald-50/60' : 'border-slate-200'}`}
-              >
-                <div className="flex items-center justify-between">
-                  <span className="font-semibold">Free end-of-day</span>
-                  <span
-                    className={`size-4 rounded-full border-4 ${value.provider === 'FREE_EOD' ? 'border-emerald-500' : 'border-slate-300'}`}
-                  />
-                </div>
-                <p className="mt-1 text-xs text-slate-500">
-                  Official NSE daily candles and after-close signals. Active pipeline.
-                </p>
-              </button>
-              <button
-                disabled
-                className="w-full cursor-not-allowed rounded-xl border border-slate-200 p-4 text-left opacity-60"
-              >
-                <div className="flex items-center justify-between">
-                  <span className="font-semibold">Zerodha Kite Connect</span>
-                  <span
-                    className="size-4 rounded-full border-4 border-slate-300"
-                  />
-                </div>
-                <p className="mt-1 text-xs text-slate-500">
-                  Planned adapter. It remains disabled until authentication,
-                  token refresh, and data-parity tests are implemented.
-                </p>
-              </button>
+              <ProviderCard
+                title="Free NSE end-of-day"
+                description="Official NSE historical candles. Always active as the safe fallback."
+                selected={value.provider === 'FREE_EOD'}
+                status="Ready"
+                onSelect={() => onChange({ ...value, provider: 'FREE_EOD' })}
+              />
+              <ProviderCard
+                title="Zerodha Kite Connect"
+                description="Live price confirmation for the top 50 EOD-ranked stocks. Requires the ₹500 data plan and daily login."
+                selected={value.provider === 'KITE_CONNECT'}
+                status={!kite?.configured ? 'Setup required' : kite.connected ? 'Connected' : kite?.expired ? 'Session expired' : 'Not connected'}
+                onSelect={kite?.connected ? () => onChange({ ...value, provider: 'KITE_CONNECT' }) : undefined}
+                action={kite?.connected ? (
+                  <Button variant="outline" size="sm" onClick={() => void onDisconnectBroker('KITE_CONNECT')}>Disconnect</Button>
+                ) : (
+                  kite?.configured ? (
+                    <Link href="/api/brokers/zerodha/login" className={buttonVariants({ size: 'sm' })}>Connect Zerodha</Link>
+                  ) : (
+                    <Button size="sm" disabled>Connect Zerodha</Button>
+                  )
+                )}
+              />
+              <ProviderCard
+                title="Groww Connect"
+                description="Live LTP confirmation for the top 50 stocks using your daily Groww Trading API token."
+                selected={value.provider === 'GROWW_CONNECT'}
+                status={!groww?.configured ? 'Setup required' : groww.connected ? 'Connected' : groww?.expired ? 'Session expired' : 'Not connected'}
+                onSelect={groww?.connected ? () => onChange({ ...value, provider: 'GROWW_CONNECT' }) : undefined}
+                action={groww?.connected ? (
+                  <Button variant="outline" size="sm" onClick={() => void onDisconnectBroker('GROWW_CONNECT')}>Disconnect</Button>
+                ) : (
+                  <Button size="sm" onClick={() => setGrowwDialogOpen(true)} disabled={!groww?.configured}>Connect Groww</Button>
+                )}
+              />
             </div>
+            <p className="mt-4 text-xs leading-relaxed text-slate-500">
+              Live providers update prices every 30 seconds while this dashboard is open. Historical scoring still comes from validated NSE EOD data.
+            </p>
           </div>
           <div className="panel p-5">
             <div className="flex items-center justify-between">
@@ -1805,7 +2058,86 @@ function SettingsView({
           Save settings
         </Button>
       </div>
+      <Dialog open={growwDialogOpen} onOpenChange={setGrowwDialogOpen}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Connect Groww</DialogTitle>
+            <DialogDescription>
+              Generate today&apos;s access token from Groww Trading APIs and paste it here. It is encrypted before being saved and normally expires at 6 AM.
+            </DialogDescription>
+          </DialogHeader>
+          <label className="block text-sm font-medium">
+            Groww access token
+            <textarea
+              value={growwToken}
+              onChange={(event) => setGrowwToken(event.target.value)}
+              rows={4}
+              autoComplete="off"
+              spellCheck={false}
+              className="mt-2 w-full resize-none rounded-xl border border-slate-200 p-3 font-mono text-sm outline-none focus:border-emerald-500"
+              placeholder="Paste the token generated in Groww"
+            />
+          </label>
+          {brokerError && <p className="text-sm text-rose-700">{brokerError}</p>}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setGrowwDialogOpen(false)}>Cancel</Button>
+            <Button
+              disabled={brokerBusy || growwToken.trim().length < 20}
+              onClick={async () => {
+                setBrokerBusy(true);
+                setBrokerError(null);
+                try {
+                  await onConnectGroww(growwToken.trim());
+                  setGrowwToken('');
+                  setGrowwDialogOpen(false);
+                } catch (error) {
+                  setBrokerError(error instanceof Error ? error.message : 'Groww connection failed');
+                } finally {
+                  setBrokerBusy(false);
+                }
+              }}
+            >
+              {brokerBusy ? <LoaderCircle className="animate-spin" /> : <Radio />}
+              {brokerBusy ? 'Checking token…' : 'Connect securely'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
+  );
+}
+
+function ProviderCard({
+  title,
+  description,
+  selected,
+  status,
+  onSelect,
+  action,
+}: {
+  title: string;
+  description: string;
+  selected: boolean;
+  status: string;
+  onSelect?: () => void;
+  action?: React.ReactNode;
+}) {
+  return (
+    <article className={`rounded-xl border p-4 transition ${selected ? 'border-emerald-500 bg-emerald-50/70 shadow-[0_8px_24px_rgba(16,185,129,.08)]' : 'border-slate-200 bg-white'}`}>
+      <div className="flex items-start justify-between gap-3">
+        <button aria-label={`Select ${title} provider`} type="button" onClick={onSelect} disabled={!onSelect} className="flex min-w-0 flex-1 items-start gap-3 text-left disabled:cursor-default">
+          <span className={`mt-1 size-4 shrink-0 rounded-full border-4 ${selected ? 'border-emerald-500' : 'border-slate-300'}`} />
+          <span>
+            <span className="block font-semibold">{title}</span>
+            <span className="mt-1 block text-xs leading-relaxed text-slate-500">{description}</span>
+          </span>
+        </button>
+        <span className={`shrink-0 rounded-full px-2 py-1 text-xs font-semibold ${status === 'Ready' || status === 'Connected' ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-50 text-amber-800'}`}>
+          {status}
+        </span>
+      </div>
+      {action && <div className="mt-3 flex justify-end">{action}</div>}
+    </article>
   );
 }
 
@@ -1827,6 +2159,12 @@ function OpportunityDialog({
   onCreateTrade: (o: Opportunity) => void;
 }) {
   if (!stock) return null;
+  const support = Number.isFinite(stock.support)
+    ? stock.support
+    : Math.min(...stock.prices.slice(-20));
+  const resistance = Number.isFinite(stock.resistance)
+    ? stock.resistance
+    : Math.max(...stock.prices.slice(-20));
   const blocked =
     stock.status === 'Watch' ||
     stock.quantity < 1 ||
@@ -1907,6 +2245,8 @@ function OpportunityDialog({
                 `${money(stock.entryLow, 2)}–${money(stock.entryHigh, 2)}`,
               ],
               ['Stop', money(stock.stop, 2)],
+              ['Support', money(support, 2)],
+              ['Resistance', money(resistance, 2)],
               ['Target 1', money(stock.target1, 2)],
               ['Target 2', money(stock.target2, 2)],
               ['Quantity', `${stock.quantity} shares`],
@@ -1919,6 +2259,20 @@ function OpportunityDialog({
                 <p className="mt-1 text-sm font-semibold">{value}</p>
               </div>
             ))}
+          </div>
+        </div>
+        <div className="grid gap-3 rounded-xl border border-blue-100 bg-blue-50/70 p-4 text-sm sm:grid-cols-2">
+          <div>
+            <p className="font-semibold text-blue-950">Support · {money(support, 2)}</p>
+            <p className="mt-1 leading-relaxed text-blue-900/80">
+              A recent price area where buyers returned. A daily close below it weakens the bullish setup; always follow the planned stop.
+            </p>
+          </div>
+          <div>
+            <p className="font-semibold text-blue-950">Resistance · {money(resistance, 2)}</p>
+            <p className="mt-1 leading-relaxed text-blue-900/80">
+              The recent ceiling. A close above it with stronger volume is the confirmation used for a breakout setup.
+            </p>
           </div>
         </div>
         <div className="flex items-center justify-between rounded-xl border border-slate-200 p-3 text-sm">
