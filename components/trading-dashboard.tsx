@@ -541,6 +541,25 @@ export function TradingDashboard() {
     }
   }, [loadMarket, notify]);
 
+  const importFundamentals = useCallback(async (file: File) => {
+    if (file.size > 2_000_000) throw new Error('Fundamentals CSV must be smaller than 2 MB');
+    const response = await fetch('/api/fundamentals/import', {
+      method: 'POST',
+      headers: { 'content-type': 'text/csv; charset=utf-8' },
+      body: await file.text(),
+    });
+    const data = await response.json() as {
+      error?: string;
+      importedCount?: number;
+      skippedSymbols?: string[];
+    };
+    if (!response.ok) throw new Error(data.error || 'Fundamentals import failed');
+    notify(
+      `${data.importedCount ?? 0} fundamental snapshots imported${data.skippedSymbols?.length ? `; ${data.skippedSymbols.length} unknown symbols skipped` : ''}. Rebuilding scores…`,
+    );
+    await runScan();
+  }, [notify, runScan]);
+
   const saveSettings = useCallback(async () => {
     if (settingsDraft.hardRisk < settingsDraft.normalRisk) {
       notify('Hard risk must be greater than or equal to normal risk.');
@@ -833,6 +852,7 @@ export function TradingDashboard() {
               brokerConnections={brokerConnections}
               onConnectGroww={connectGroww}
               onDisconnectBroker={disconnectLiveBroker}
+              onImportFundamentals={importFundamentals}
             />
           )}
         </div>
@@ -1876,6 +1896,7 @@ function SettingsView({
   brokerConnections,
   onConnectGroww,
   onDisconnectBroker,
+  onImportFundamentals,
 }: {
   value: Settings;
   onChange: (s: Settings) => void;
@@ -1887,11 +1908,15 @@ function SettingsView({
   brokerConnections: BrokerConnectionStatus[];
   onConnectGroww: (accessToken: string) => Promise<void>;
   onDisconnectBroker: (provider: 'KITE_CONNECT' | 'GROWW_CONNECT') => Promise<void>;
+  onImportFundamentals: (file: File) => Promise<void>;
 }) {
   const [growwDialogOpen, setGrowwDialogOpen] = useState(false);
   const [growwToken, setGrowwToken] = useState('');
   const [brokerBusy, setBrokerBusy] = useState(false);
   const [brokerError, setBrokerError] = useState<string | null>(null);
+  const [fundamentalFile, setFundamentalFile] = useState<File | null>(null);
+  const [fundamentalBusy, setFundamentalBusy] = useState(false);
+  const [fundamentalError, setFundamentalError] = useState<string | null>(null);
   const kite = brokerConnections.find((item) => item.provider === 'KITE_CONNECT');
   const groww = brokerConnections.find((item) => item.provider === 'GROWW_CONNECT');
   const numberField = (key: keyof Settings, label: string, help: string) => (
@@ -2053,6 +2078,62 @@ function SettingsView({
           </div>
         </article>
       </div>
+      <article className="panel overflow-hidden">
+        <div className="grid gap-5 p-5 md:grid-cols-[1fr_auto] md:items-center">
+          <div>
+            <div className="flex items-center gap-2">
+              <Database className="size-4 text-blue-700" />
+              <h2 className="font-semibold">Fundamental quality data</h2>
+            </div>
+            <p className="mt-2 max-w-3xl text-sm leading-relaxed text-slate-600">
+              Import source-dated market cap, debt/equity, OPM, ROE and sales growth. Banks may also include capital adequacy and NPA values. Scores are rebuilt immediately after a valid import.
+            </p>
+            <p className="mt-2 text-xs leading-relaxed text-slate-500">
+              Use consolidated figures from a source you are licensed to use. Missing or older-than-190-day evidence stays Watch-only.
+            </p>
+            <div className="mt-3 flex flex-wrap items-center gap-3">
+              <label className="cursor-pointer rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium hover:bg-slate-50">
+                Choose CSV
+                <input
+                  type="file"
+                  accept=".csv,text/csv"
+                  className="sr-only"
+                  onChange={(event) => {
+                    setFundamentalFile(event.target.files?.[0] ?? null);
+                    setFundamentalError(null);
+                  }}
+                />
+              </label>
+              <span className="text-sm text-slate-500">
+                {fundamentalFile?.name ?? 'No file selected'}
+              </span>
+              <a href="/fundamentals-template.csv" download className="text-sm font-semibold text-blue-700 hover:underline">
+                Download template
+              </a>
+            </div>
+            {fundamentalError && <p className="mt-3 text-sm text-rose-700">{fundamentalError}</p>}
+          </div>
+          <Button
+            disabled={!fundamentalFile || fundamentalBusy || scanState === 'running'}
+            onClick={async () => {
+              if (!fundamentalFile) return;
+              setFundamentalBusy(true);
+              setFundamentalError(null);
+              try {
+                await onImportFundamentals(fundamentalFile);
+                setFundamentalFile(null);
+              } catch (error) {
+                setFundamentalError(error instanceof Error ? error.message : 'Fundamentals import failed');
+              } finally {
+                setFundamentalBusy(false);
+              }
+            }}
+          >
+            {fundamentalBusy ? <LoaderCircle className="animate-spin" /> : <Database />}
+            {fundamentalBusy ? 'Importing and rescoring…' : 'Import and rebuild scores'}
+          </Button>
+        </div>
+      </article>
       <div className="flex justify-end">
         <Button size="lg" onClick={onSave}>
           Save settings

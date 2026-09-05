@@ -92,6 +92,7 @@ Open `http://localhost:3000`, sign in, change one setting, refresh, and confirm 
    - `BROKER_TOKEN_ENCRYPTION_KEY`
    - `KITE_API_KEY` (only when Zerodha is enabled)
    - `KITE_API_SECRET` (only when Zerodha is enabled)
+   - `FUNDAMENTALS_CSV_URL` (optional licensed HTTPS CSV refreshed during every EOD sync)
 7. Click **Deploy**.
 
 If the environment variables are added after the first deployment, trigger a redeploy so the Next.js build receives them.
@@ -110,11 +111,15 @@ This downloads official NSE Nifty 500 constituents, equity bhavcopies, and Nifty
 
 Copy `data/fundamentals-template.csv` to `data/fundamentals.csv` and populate it from a source you are licensed to use. `market_cap_cr` is in crore rupees; percentages are entered as numbers such as `18.5`, not `0.185`. Keep the filing/snapshot date and source on every row.
 
+The same import is available in **Settings -> Fundamental quality data**. Download the template, populate it, choose the CSV, and click **Import and rebuild scores**. The server validates the schema, dates, source, URLs, duplicate symbols, size, and current NSE universe before saving anything. Unknown symbols are skipped and the EOD scores rebuild immediately.
+
 ```powershell
 npm run data:fundamentals -- data/fundamentals.csv
 ```
 
 The scanner intentionally leaves a stock at **Watch** when required fundamentals are missing, stale, or fail the quality gates. Run the normal scan again after importing.
+
+For an automated licensed feed, expose the same CSV at a private or access-controlled HTTPS URL and set `FUNDAMENTALS_CSV_URL` in Vercel. Each automatic or manual EOD sync imports the current file before recalculating scores. Do not configure a scraped page or a URL that you are not authorized to access.
 
 ## 9. Daily schedule
 

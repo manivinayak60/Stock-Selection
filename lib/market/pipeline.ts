@@ -1,6 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 import type { CandidateSnapshot } from '@/lib/trading';
+import { syncConfiguredFundamentals } from './fundamentals';
 
 import { appendCandle, calculateMarketRegime, calculateTechnicalSnapshot } from './indicators';
 import { fetchLatestNseSession, fetchNifty500Universe } from './nse';
@@ -232,6 +233,15 @@ export async function runDailyPipeline(admin: SupabaseClient, now = new Date()) 
   const universe = await fetchNifty500Universe();
   const session = await fetchLatestNseSession(now);
   await persistUniverse(admin, universe);
+  const fundamentalsWarnings: string[] = [];
+  try {
+    const fundamentals = await syncConfiguredFundamentals(admin);
+    if (fundamentals?.skippedSymbols.length) {
+      fundamentalsWarnings.push(`${fundamentals.skippedSymbols.length} configured fundamental rows were outside the NSE universe.`);
+    }
+  } catch (error) {
+    fundamentalsWarnings.push(`Configured fundamentals refresh failed: ${error instanceof Error ? error.message : 'unknown error'}`);
+  }
   const allowed = new Set(universe.map((item) => item.symbol));
   const equities = new Map(
     [...session.equities].filter(([symbol]) => allowed.has(symbol)),
@@ -252,7 +262,7 @@ export async function runDailyPipeline(admin: SupabaseClient, now = new Date()) 
     states,
     session.date,
     equities.size,
-    session.failures,
+    [...session.failures, ...fundamentalsWarnings],
   );
   const pruned = await admin.rpc('prune_swing_signal_history');
   if (pruned.error) console.warn(`History retention cleanup skipped: ${pruned.error.message}`);
