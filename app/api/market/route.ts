@@ -40,9 +40,12 @@ export async function GET() {
 
   const historyResult = await supabase
     .from('market_scan_runs')
-    .select('id,market_date,provider,status,universe_count,qualified_count,created_at')
-    .order('created_at', { ascending: false })
+    .select('id,market_date,provider,status,universe_count,qualified_count,started_at')
+    .order('started_at', { ascending: false })
     .limit(20);
+  if (historyResult.error) {
+    console.error('Unable to load market scan history', historyResult.error);
+  }
 
   const marketDate = String(runResult.data.market_date);
   const ageDays = Math.floor(
@@ -73,7 +76,7 @@ export async function GET() {
       status: run.status,
       universeCount: run.universe_count,
       qualifiedCount: run.qualified_count,
-      createdAt: run.created_at,
+      createdAt: run.started_at,
     })),
   });
 }
