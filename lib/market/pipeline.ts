@@ -9,6 +9,8 @@ import type { Candle, FundamentalSnapshot, Instrument } from './types';
 
 const STATE_LIMIT = 260;
 const WRITE_BATCH = 400;
+const STATE_WRITE_BATCH = 25;
+const CANDIDATE_WRITE_BATCH = 50;
 
 type StateRow = { symbol: string; candles: Candle[] };
 type FundamentalRow = {
@@ -29,9 +31,10 @@ type FundamentalRow = {
 async function writeBatches<T>(
   values: T[],
   operation: (batch: T[]) => PromiseLike<{ error: { message: string } | null }>,
+  batchSize = WRITE_BATCH,
 ) {
-  for (let index = 0; index < values.length; index += WRITE_BATCH) {
-    const result = await operation(values.slice(index, index + WRITE_BATCH));
+  for (let index = 0; index < values.length; index += batchSize) {
+    const result = await operation(values.slice(index, index + batchSize));
     if (result.error) throw new Error(result.error.message);
   }
 }
@@ -96,6 +99,7 @@ export async function persistStates(
         : [];
     }),
     (batch) => admin.from('indicator_states').upsert(batch, { onConflict: 'symbol' }),
+    STATE_WRITE_BATCH,
   );
 }
 
@@ -219,6 +223,7 @@ export async function createScan(
       payload: candidate,
     })),
     (batch) => admin.from('market_scan_candidates').insert(batch),
+    CANDIDATE_WRITE_BATCH,
   );
   return { runId, marketDate, status, regime, candidates, warnings };
 }
