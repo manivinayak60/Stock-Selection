@@ -1,11 +1,12 @@
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
-import { loadEnvConfig } from '@next/env';
+import nextEnv from '@next/env';
 
 import { numeric, parseCsv } from '../lib/market/csv';
 import { createAdminClient } from '../lib/supabase/admin';
 
+const { loadEnvConfig } = nextEnv;
 loadEnvConfig(process.cwd());
 
 const file = resolve(process.argv[2] ?? 'data/fundamentals.csv');
