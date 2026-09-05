@@ -191,6 +191,7 @@ export async function createScan(
     );
   }
 
+  const scanTimestamp = new Date().toISOString();
   const runResult = await admin
     .from('market_scan_runs')
     .upsert({
@@ -206,7 +207,8 @@ export async function createScan(
       source: 'NSE Nifty 500 + sec_bhavdata_full + index daily snapshot',
       warnings,
       error_message: null,
-      completed_at: new Date().toISOString(),
+      started_at: scanTimestamp,
+      completed_at: scanTimestamp,
     }, { onConflict: 'market_date,provider' })
     .select('id')
     .single();
