@@ -8,6 +8,7 @@ export type Settings = {
   maxPositions: number;
   maxSectorAllocation: number;
   provider: ProviderMode;
+  screenerUrl: string;
 };
 
 export type CandidateSnapshot = {
@@ -15,6 +16,7 @@ export type CandidateSnapshot = {
   name: string;
   sector: string;
   isBank: boolean;
+  isNbfc: boolean;
   close: number;
   change: number;
   marketCapCr: number | null;
@@ -22,6 +24,9 @@ export type CandidateSnapshot = {
   opm: number | null;
   roe: number | null;
   salesGrowth: number | null;
+  capitalAdequacy: number | null;
+  grossNpa: number | null;
+  netNpa: number | null;
   trend: number;
   momentum: number;
   relativeStrength: number;
@@ -111,6 +116,7 @@ export const defaultSettings: Settings = {
   maxPositions: 5,
   maxSectorAllocation: 35,
   provider: 'FREE_EOD',
+  screenerUrl: '',
 };
 
 const round = (value: number, digits = 2) => Number(value.toFixed(digits));

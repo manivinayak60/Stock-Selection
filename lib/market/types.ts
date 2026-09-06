@@ -17,6 +17,7 @@ export type Instrument = {
   series: string;
   isin: string;
   isBank: boolean;
+  isNbfc: boolean;
 };
 
 export type FundamentalSnapshot = {
@@ -54,6 +55,7 @@ export type TechnicalSnapshot = {
   medianTurnoverLacs20: number;
   prior20High: number;
   high52Week: number;
+  corporateActionGap: boolean;
   support20: number;
   breakout20: boolean;
   prices: number[];

@@ -11,6 +11,7 @@ const instrument: Instrument = {
   series: 'EQ',
   isin: 'INE000000000',
   isBank: false,
+  isNbfc: false,
 };
 const technical: TechnicalSnapshot = {
   asOfDate: '2026-09-03', close: 120, change: 2, sma20: 112, sma50: 105,
@@ -19,6 +20,7 @@ const technical: TechnicalSnapshot = {
   relativeVolume20: 1.7, medianTurnoverLacs20: 1_500, prior20High: 118,
   support20: 104, high52Week: 125, breakout20: true,
   prices: [105, 107, 109, 111, 114, 120],
+  corporateActionGap: false,
 };
 const regime: MarketRegime = {
   label: 'Bullish', score: 10, benchmarkClose: 20_000, benchmarkSma50: 19_000,
@@ -55,4 +57,28 @@ void test('illiquid securities fail the hard gate', () => {
   );
   assert.equal(candidate.status, 'Watch');
   assert.match(candidate.caution, /turnover/i);
+});
+
+void test('unadjusted corporate-action gaps fail closed', () => {
+  const candidate = scoreCandidate(
+    instrument,
+    { ...technical, corporateActionGap: true },
+    fundamental,
+    regime,
+  );
+  assert.equal(candidate.status, 'Watch');
+  assert.match(candidate.caution, /corporate action/i);
+});
+
+void test('bank model requires capital adequacy and controlled NPAs', () => {
+  const bank = { ...instrument, companyName: 'Test Bank', isBank: true };
+  const healthy = scoreCandidate(bank, technical, {
+    ...fundamental,
+    capitalAdequacy: 16,
+    grossNpa: 3,
+    netNpa: 1,
+  }, regime);
+  const incomplete = scoreCandidate(bank, technical, fundamental, regime);
+  assert.notEqual(healthy.status, 'Watch');
+  assert.equal(incomplete.status, 'Watch');
 });

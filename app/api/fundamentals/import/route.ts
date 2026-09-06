@@ -13,7 +13,14 @@ export async function POST(request: Request) {
     if (contentLength > MAX_FUNDAMENTALS_CSV_BYTES) {
       return NextResponse.json({ error: 'Fundamentals CSV must be smaller than 2 MB' }, { status: 413 });
     }
-    const result = await importFundamentalCsv(createAdminClient(), await request.text());
+    const sourceUrl = request.headers.get('x-fundamentals-source-url')?.trim() || undefined;
+    if (sourceUrl && !/^https:\/\//i.test(sourceUrl)) {
+      return NextResponse.json({ error: 'Fundamentals source URL must use HTTPS' }, { status: 400 });
+    }
+    const result = await importFundamentalCsv(createAdminClient(), await request.text(), {
+      sourceUrl,
+      sourceName: sourceUrl?.includes('screener.in') ? 'Screener.in export' : undefined,
+    });
     return NextResponse.json({ ok: true, ...result });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Fundamentals import failed';

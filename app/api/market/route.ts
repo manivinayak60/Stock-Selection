@@ -67,6 +67,7 @@ export async function GET() {
       failedCount: runResult.data.failed_count,
       source: runResult.data.source,
       warnings: runResult.data.warnings ?? [],
+      missingSymbols: runResult.data.missing_symbols ?? [],
       stale: ageDays > 5,
     },
     history: (historyResult.data ?? []).map((run) => ({

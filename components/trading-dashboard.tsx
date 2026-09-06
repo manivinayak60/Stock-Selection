@@ -97,6 +97,7 @@ type MarketMeta = {
   failedCount: number;
   source: string;
   warnings: string[];
+  missingSymbols: string[];
   stale: boolean;
 };
 
@@ -529,11 +530,24 @@ export function TradingDashboard() {
     setScanState('running');
     try {
       const response = await fetch('/api/pipeline/run', { method: 'POST' });
-      const data = (await response.json()) as { error?: string };
+      const data = (await response.json()) as {
+        error?: string;
+        qualifiedCount?: number;
+        marketDate?: string;
+      };
       if (!response.ok) throw new Error(data.error || 'EOD pipeline failed');
       await loadMarket();
       setScanState('complete');
       notify('Validated NSE EOD scan completed.');
+      if (
+        typeof Notification !== 'undefined' &&
+        Notification.permission === 'granted' &&
+        window.localStorage.getItem('swing-signal-browser-alerts') === 'enabled'
+      ) {
+        new Notification('SwingSignal EOD scan completed', {
+          body: `${data.qualifiedCount ?? 0} qualified setups for ${data.marketDate ?? 'the latest session'}.`,
+        });
+      }
       window.setTimeout(() => setScanState('idle'), 1800);
     } catch (error) {
       setScanState('idle');
@@ -541,11 +555,14 @@ export function TradingDashboard() {
     }
   }, [loadMarket, notify]);
 
-  const importFundamentals = useCallback(async (file: File) => {
+  const importFundamentals = useCallback(async (file: File, sourceUrl: string) => {
     if (file.size > 2_000_000) throw new Error('Fundamentals CSV must be smaller than 2 MB');
     const response = await fetch('/api/fundamentals/import', {
       method: 'POST',
-      headers: { 'content-type': 'text/csv; charset=utf-8' },
+      headers: {
+        'content-type': 'text/csv; charset=utf-8',
+        ...(sourceUrl.trim() ? { 'x-fundamentals-source-url': sourceUrl.trim() } : {}),
+      },
       body: await file.text(),
     });
     const data = await response.json() as {
@@ -1774,7 +1791,7 @@ function HealthView({
       label: 'Price snapshot',
       state: priceHealthy ? 'Healthy' : 'Review',
       detail: marketMeta
-        ? `${marketMeta.receivedCount} of ${marketMeta.universeCount} NSE symbols received for ${formatMarketDate(marketMeta.marketDate)}`
+        ? `${marketMeta.receivedCount} of ${marketMeta.universeCount} NSE symbols received for ${formatMarketDate(marketMeta.marketDate)}${marketMeta.missingSymbols?.length ? ` · Missing: ${marketMeta.missingSymbols.join(', ')}` : ''}`
         : 'No NSE price snapshot has been saved yet',
     },
     {
@@ -1908,8 +1925,9 @@ function SettingsView({
   brokerConnections: BrokerConnectionStatus[];
   onConnectGroww: (accessToken: string) => Promise<void>;
   onDisconnectBroker: (provider: 'KITE_CONNECT' | 'GROWW_CONNECT') => Promise<void>;
-  onImportFundamentals: (file: File) => Promise<void>;
+  onImportFundamentals: (file: File, sourceUrl: string) => Promise<void>;
 }) {
+  const [zerodhaDialogOpen, setZerodhaDialogOpen] = useState(false);
   const [growwDialogOpen, setGrowwDialogOpen] = useState(false);
   const [growwToken, setGrowwToken] = useState('');
   const [brokerBusy, setBrokerBusy] = useState(false);
@@ -1917,8 +1935,18 @@ function SettingsView({
   const [fundamentalFile, setFundamentalFile] = useState<File | null>(null);
   const [fundamentalBusy, setFundamentalBusy] = useState(false);
   const [fundamentalError, setFundamentalError] = useState<string | null>(null);
+  const [browserAlerts, setBrowserAlerts] = useState(false);
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setBrowserAlerts(window.localStorage.getItem('swing-signal-browser-alerts') === 'enabled');
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
   const kite = brokerConnections.find((item) => item.provider === 'KITE_CONNECT');
   const groww = brokerConnections.find((item) => item.provider === 'GROWW_CONNECT');
+  const zerodhaRedirect = typeof window === 'undefined'
+    ? '/api/brokers/zerodha/callback'
+    : `${window.location.origin}/api/brokers/zerodha/callback`;
   const numberField = (key: keyof Settings, label: string, help: string) => (
     <label className="block">
       <span className="text-sm font-medium">{label}</span>
@@ -2033,11 +2061,14 @@ function SettingsView({
                 action={kite?.connected ? (
                   <Button variant="outline" size="sm" onClick={() => void onDisconnectBroker('KITE_CONNECT')}>Disconnect</Button>
                 ) : (
-                  kite?.configured ? (
-                    <Link href="/api/brokers/zerodha/login" className={buttonVariants({ size: 'sm' })}>Connect Zerodha</Link>
-                  ) : (
-                    <Button size="sm" disabled>Connect Zerodha</Button>
-                  )
+                  <div className="flex flex-wrap gap-2">
+                    <Button variant="outline" size="sm" onClick={() => setZerodhaDialogOpen(true)}>Setup steps</Button>
+                    {kite?.configured ? (
+                      <Link href="/api/brokers/zerodha/login" className={buttonVariants({ size: 'sm' })}>Connect Zerodha</Link>
+                    ) : (
+                      <Button size="sm" disabled>Connect Zerodha</Button>
+                    )}
+                  </div>
                 )}
               />
               <ProviderCard
@@ -2075,6 +2106,32 @@ function SettingsView({
                 F&O · Coming later
               </span>
             </div>
+            <div className="mt-5 border-t border-slate-100 pt-4">
+              <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
+                <div>
+                  <p className="text-sm font-semibold">Browser scan alerts</p>
+                  <p className="mt-1 text-xs text-slate-500">Notify this device when an in-page EOD scan finishes.</p>
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={async () => {
+                    if (typeof Notification === 'undefined') return;
+                    if (browserAlerts) {
+                      window.localStorage.removeItem('swing-signal-browser-alerts');
+                      setBrowserAlerts(false);
+                      return;
+                    }
+                    if (await Notification.requestPermission() === 'granted') {
+                      window.localStorage.setItem('swing-signal-browser-alerts', 'enabled');
+                      setBrowserAlerts(true);
+                    }
+                  }}
+                >
+                  <Bell /> {browserAlerts ? 'Disable alerts' : 'Enable alerts'}
+                </Button>
+              </div>
+            </div>
           </div>
         </article>
       </div>
@@ -2090,6 +2147,29 @@ function SettingsView({
             </p>
             <p className="mt-2 text-xs leading-relaxed text-slate-500">
               Use consolidated figures from a source you are licensed to use. Missing or older-than-190-day evidence stays Watch-only.
+            </p>
+            <div className="mt-4 grid gap-2 sm:grid-cols-[1fr_auto]">
+              <label className="text-sm font-medium">
+                Screener saved-screen URL
+                <input
+                  type="url"
+                  value={value.screenerUrl}
+                  onChange={(event) => onChange({ ...value, screenerUrl: event.target.value })}
+                  placeholder="https://www.screener.in/screens/..."
+                  className="mt-2 h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm outline-none focus:border-emerald-500"
+                />
+              </label>
+              <a
+                href={value.screenerUrl || 'https://www.screener.in/screens/'}
+                target="_blank"
+                rel="noreferrer"
+                className={`${buttonVariants({ variant: 'outline' })} self-end`}
+              >
+                Open Screener <ExternalLink />
+              </a>
+            </div>
+            <p className="mt-2 text-xs text-slate-500">
+              Export CSV from this screen, then upload it below. SwingSignal now recognises Screener columns such as NSE Code, Mar Cap Rs.Cr., Debt / Eq, OPM %, ROE % and Sales growth 3Years.
             </p>
             <div className="mt-3 flex flex-wrap items-center gap-3">
               <label className="cursor-pointer rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium hover:bg-slate-50">
@@ -2120,7 +2200,7 @@ function SettingsView({
               setFundamentalBusy(true);
               setFundamentalError(null);
               try {
-                await onImportFundamentals(fundamentalFile);
+                await onImportFundamentals(fundamentalFile, value.screenerUrl);
                 setFundamentalFile(null);
               } catch (error) {
                 setFundamentalError(error instanceof Error ? error.message : 'Fundamentals import failed');
@@ -2181,6 +2261,34 @@ function SettingsView({
               {brokerBusy ? <LoaderCircle className="animate-spin" /> : <Radio />}
               {brokerBusy ? 'Checking token…' : 'Connect securely'}
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={zerodhaDialogOpen} onOpenChange={setZerodhaDialogOpen}>
+        <DialogContent className="sm:max-w-xl">
+          <DialogHeader>
+            <DialogTitle>Set up Zerodha Kite Connect</DialogTitle>
+            <DialogDescription>
+              API credentials stay in Vercel and are never entered into this web page.
+            </DialogDescription>
+          </DialogHeader>
+          <ol className="space-y-3 text-sm leading-relaxed text-slate-700">
+            <li><strong>1.</strong> Subscribe to Kite Connect and create an app in the Zerodha developer console.</li>
+            <li><strong>2.</strong> Set the app redirect URL exactly to:</li>
+          </ol>
+          <div className="break-all rounded-xl bg-slate-950 p-3 font-mono text-xs text-emerald-300">{zerodhaRedirect}</div>
+          <ol start={3} className="space-y-3 text-sm leading-relaxed text-slate-700">
+            <li><strong>3.</strong> Add <code>KITE_API_KEY</code> and <code>KITE_API_SECRET</code> as Production environment variables in Vercel.</li>
+            <li><strong>4.</strong> Redeploy once, return here, and click Connect Zerodha.</li>
+            <li><strong>5.</strong> Complete Zerodha login each trading day; the access token expires daily.</li>
+            <li><strong>6.</strong> Select Zerodha and save Settings. If login expires, NSE EOD remains the fallback.</li>
+          </ol>
+          <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs leading-relaxed text-amber-900">
+            Current status: {kite?.configured ? 'server credentials are configured; you can connect.' : 'KITE_API_KEY or KITE_API_SECRET is still missing in Vercel.'}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setZerodhaDialogOpen(false)}>Close</Button>
+            {kite?.configured && <Link href="/api/brokers/zerodha/login" className={buttonVariants()}>Connect Zerodha</Link>}
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -2363,8 +2471,10 @@ function OpportunityDialog({
               : `Market cap ${money(stock.marketCapCr * 10000000)}`}
             {' · '}ROE {stock.roe === null ? 'unavailable' : `${stock.roe}%`} ·{' '}
             {stock.isBank
-              ? 'Bank quality model'
-              : `D/E ${stock.debtEquity ?? 'unavailable'} · OPM ${stock.opm === null ? 'unavailable' : `${stock.opm}%`}`}
+              ? `Bank model · CAR ${stock.capitalAdequacy ?? 'unavailable'}% · Gross/Net NPA ${stock.grossNpa ?? 'unavailable'}%/${stock.netNpa ?? 'unavailable'}%`
+              : stock.isNbfc
+                ? `NBFC model · D/E ${stock.debtEquity ?? 'unavailable'}`
+                : `D/E ${stock.debtEquity ?? 'unavailable'} · OPM ${stock.opm === null ? 'unavailable' : `${stock.opm}%`}`}
           </span>
           <a
             href={`https://www.tradingview.com/chart/?symbol=NSE%3A${encodeURIComponent(stock.symbol)}`}

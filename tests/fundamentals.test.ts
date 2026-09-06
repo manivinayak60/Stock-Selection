@@ -24,3 +24,14 @@ void test('fundamental CSV rejects missing provenance and duplicate symbols', ()
     /Duplicate symbol/,
   );
 });
+
+void test('Screener exports are mapped without manual column renaming', () => {
+  const rows = parseFundamentalCsv(
+    'Name,NSE Code,Mar Cap Rs.Cr.,Debt / Eq,OPM %,ROE %,Sales growth 3Years\nTest Ltd,TEST,12000,0.4,18,16,12',
+    { asOfDate: '2026-09-06', sourceUrl: 'https://www.screener.in/screens/123/test/' },
+  );
+  assert.equal(rows[0].symbol, 'TEST');
+  assert.equal(rows[0].opm, 18);
+  assert.equal(rows[0].source_name, 'Screener.in export');
+  assert.equal(rows[0].source_url, 'https://www.screener.in/screens/123/test/');
+});

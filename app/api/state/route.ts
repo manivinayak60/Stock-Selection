@@ -13,6 +13,7 @@ type SettingsRow = {
   max_positions: number;
   max_sector_allocation: number;
   provider: string;
+  screener_url: string | null;
 };
 
 function unauthorized() {
@@ -34,6 +35,7 @@ function mapSettings(row: SettingsRow | null) {
     maxPositions: row.max_positions,
     maxSectorAllocation: row.max_sector_allocation,
     provider: row.provider as typeof defaultSettings.provider,
+    screenerUrl: row.screener_url ?? '',
   };
 }
 
@@ -51,7 +53,7 @@ export async function GET() {
   const [settingsResult, watchlistResult, tradesResult, runsResult] = await Promise.all([
     supabase
       .from('settings')
-      .select('capital, normal_risk, hard_risk, per_stock_risk, max_positions, max_sector_allocation, provider')
+      .select('capital, normal_risk, hard_risk, per_stock_risk, max_positions, max_sector_allocation, provider, screener_url')
       .eq('user_id', userId)
       .maybeSingle<SettingsRow>(),
     supabase
@@ -119,11 +121,13 @@ export async function POST(request: Request) {
 
   if (action === 'saveSettings') {
     const s = body.settings as typeof defaultSettings;
+    const screenerUrl = typeof s?.screenerUrl === 'string' ? s.screenerUrl.trim() : '';
     if (
       !s || s.capital <= 0 || s.normalRisk <= 0 || s.hardRisk < s.normalRisk ||
       s.perStockRisk <= 0 || s.maxPositions < 1 || s.maxSectorAllocation <= 0 ||
       s.maxSectorAllocation > 100 ||
-      !['FREE_EOD', 'KITE_CONNECT', 'GROWW_CONNECT'].includes(s.provider)
+      !['FREE_EOD', 'KITE_CONNECT', 'GROWW_CONNECT'].includes(s.provider) ||
+      (screenerUrl !== '' && !/^https:\/\/(?:www\.)?screener\.in\//i.test(screenerUrl))
     ) {
       return NextResponse.json({ error: 'Invalid risk settings' }, { status: 400 });
     }
@@ -137,6 +141,7 @@ export async function POST(request: Request) {
       max_positions: s.maxPositions,
       max_sector_allocation: s.maxSectorAllocation,
       provider: s.provider,
+      screener_url: screenerUrl || null,
       updated_at: now,
     }, { onConflict: 'user_id' });
     if (error) return databaseError(error.message);

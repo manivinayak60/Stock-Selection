@@ -104,6 +104,11 @@ export function calculateTechnicalSnapshot(
   const roc20 = (latest.close / closes.at(-21)! - 1) * 100;
   const roc63 = (latest.close / closes.at(-64)! - 1) * 100;
   const benchmarkRoc63 = (benchmarkLatest / benchmarkStart - 1) * 100;
+  const corporateActionGap = candles.slice(-200).some((candle, index, recent) => {
+    if (index === 0) return false;
+    const priorClose = recent[index - 1].close;
+    return priorClose > 0 && Math.abs(candle.close / priorClose - 1) >= 0.35;
+  });
 
   return {
     asOfDate: latest.date,
@@ -128,6 +133,7 @@ export function calculateTechnicalSnapshot(
     ),
     prior20High: round(prior20High),
     high52Week: round(Math.max(...candles.slice(-252).map((item) => item.high))),
+    corporateActionGap,
     support20: round(support20),
     breakout20: latest.close > prior20High,
     prices: closes.slice(-12).map((value) => round(value, 2)),

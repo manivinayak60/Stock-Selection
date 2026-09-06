@@ -11,9 +11,10 @@
     "start": "next start",
     "lint": "oxlint app components/trading-dashboard.tsx components/sign-out-button.tsx lib scripts tests",
     "format": "oxfmt",
-    "test": "tsx --test tests/indicators.test.ts tests/scoring.test.ts tests/fundamentals.test.ts",
+    "test": "tsx --test tests/indicators.test.ts tests/scoring.test.ts tests/fundamentals.test.ts tests/backtest.test.ts",
     "data:backfill": "tsx scripts/backfill-nse.ts",
-    "data:fundamentals": "tsx scripts/import-fundamentals.ts"
+    "data:fundamentals": "tsx scripts/import-fundamentals.ts",
+    "data:backtest": "tsx scripts/backtest-scoring.ts"
   },
   "dependencies": {
     "@base-ui/react": "1.7.0",

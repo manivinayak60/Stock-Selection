@@ -66,6 +66,7 @@ export async function persistUniverse(admin: SupabaseClient, universe: Instrumen
       series: item.series,
       isin: item.isin,
       is_bank: item.isBank,
+      is_nbfc: item.isNbfc,
       active: true,
       updated_at: new Date().toISOString(),
     })),
@@ -105,11 +106,16 @@ export async function persistStates(
 }
 
 async function loadFundamentals(admin: SupabaseClient) {
-  const { data, error } = await admin.from('fundamentals').select('*');
+  const { data, error } = await admin
+    .from('fundamentals')
+    .select('*')
+    .order('as_of_date', { ascending: false });
   if (error) throw new Error(error.message);
-  return new Map(
-    ((data ?? []) as FundamentalRow[]).map((row) => [row.symbol, fundamentalFromRow(row)]),
-  );
+  const latest = new Map<string, FundamentalSnapshot>();
+  for (const row of (data ?? []) as FundamentalRow[]) {
+    if (!latest.has(row.symbol)) latest.set(row.symbol, fundamentalFromRow(row));
+  }
+  return latest;
 }
 
 export async function persistDailyPrices(
@@ -151,6 +157,7 @@ export async function createScan(
   marketDate: string,
   receivedCount: number,
   sourceWarnings: string[] = [],
+  missingSymbols: string[] = [],
 ) {
   const benchmarkCandles = states.get('NIFTY500') ?? [];
   const technical = new Map<string, ReturnType<typeof calculateTechnicalSnapshot>>();
@@ -206,6 +213,7 @@ export async function createScan(
       failed_count: universe.length - validTechnical.length,
       source: 'NSE Nifty 500 + sec_bhavdata_full + index daily snapshot',
       warnings,
+      missing_symbols: missingSymbols,
       error_message: null,
       started_at: scanTimestamp,
       completed_at: scanTimestamp,
@@ -248,6 +256,12 @@ export async function runDailyPipeline(admin: SupabaseClient, now = new Date()) 
   const equities = new Map(
     [...session.equities].filter(([symbol]) => allowed.has(symbol)),
   );
+  const missingSymbols = universe
+    .filter((item) => !equities.has(item.symbol))
+    .map((item) => item.symbol);
+  if (missingSymbols.length) {
+    fundamentalsWarnings.push(`Missing NSE price rows: ${missingSymbols.join(', ')}.`);
+  }
   await persistDailyPrices(admin, equities, session.benchmark);
   const states = await loadStates(admin);
   for (const [symbol, candle] of equities) {
@@ -265,6 +279,7 @@ export async function runDailyPipeline(admin: SupabaseClient, now = new Date()) 
     session.date,
     equities.size,
     [...session.failures, ...fundamentalsWarnings],
+    missingSymbols,
   );
   const pruned = await admin.rpc('prune_swing_signal_history');
   if (pruned.error) console.warn(`History retention cleanup skipped: ${pruned.error.message}`);

@@ -20,8 +20,19 @@ async function run(request: Request) {
   if (!(await authorized(request))) {
     return NextResponse.json({ error: 'Authentication required' }, { status: 401 });
   }
+  const admin = createAdminClient();
+  const lease = await admin.rpc('acquire_swing_signal_pipeline_lease');
+  if (lease.error) {
+    console.error(lease.error);
+    return NextResponse.json({ error: 'Unable to acquire the EOD pipeline lease' }, { status: 500 });
+  }
+  if (!lease.data) {
+    return NextResponse.json({ error: 'An EOD sync is already running. Please wait two minutes.' }, { status: 409 });
+  }
+  let completed = false;
   try {
-    const result = await runDailyPipeline(createAdminClient());
+    const result = await runDailyPipeline(admin);
+    completed = true;
     return NextResponse.json({
       ok: true,
       runId: result.runId,
@@ -38,6 +49,9 @@ async function run(request: Request) {
       { error: error instanceof Error ? error.message : 'EOD pipeline failed' },
       { status: 500 },
     );
+  } finally {
+    const released = await admin.rpc('release_swing_signal_pipeline_lease', { p_completed: completed });
+    if (released.error) console.error('Unable to release EOD pipeline lease', released.error);
   }
 }
 

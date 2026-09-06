@@ -40,15 +40,36 @@ function fundamentalScore(
   const roe = fundamental.roe ?? Number.NEGATIVE_INFINITY;
   const growth = fundamental.salesGrowth ?? Number.NEGATIVE_INFINITY;
   if (instrument.isBank) {
-    const valid = roe >= 10 && growth > -5;
+    const capitalAdequacy = fundamental.capitalAdequacy ?? Number.NEGATIVE_INFINITY;
+    const grossNpa = fundamental.grossNpa ?? Number.POSITIVE_INFINITY;
+    const netNpa = fundamental.netNpa ?? Number.POSITIVE_INFINITY;
+    const valid = roe >= 10 && growth > -5 && capitalAdequacy >= 12 && grossNpa <= 6 && netNpa <= 3;
     const score =
-      clamp(fundamental.marketCapCr / 100_000, 0, 1) * 6 +
-      clamp(roe / 20, 0, 1) * 8 +
-      clamp((growth + 5) / 20, 0, 1) * 6;
+      clamp(fundamental.marketCapCr / 100_000, 0, 1) * 4 +
+      clamp(roe / 20, 0, 1) * 5 +
+      clamp((growth + 5) / 20, 0, 1) * 3 +
+      clamp((capitalAdequacy - 10) / 10, 0, 1) * 4 +
+      clamp(1 - grossNpa / 8, 0, 1) * 2 +
+      clamp(1 - netNpa / 4, 0, 1) * 2;
     return {
       score: round(score),
       valid,
-      reason: valid ? null : 'Bank ROE or growth quality gate failed',
+      reason: valid ? null : 'Bank ROE, growth, capital adequacy, or NPA gate failed',
+    };
+  }
+
+  if (instrument.isNbfc) {
+    const debtEquity = fundamental.debtEquity ?? Number.POSITIVE_INFINITY;
+    const valid = debtEquity <= 8 && roe >= 10 && growth > -5;
+    const score =
+      clamp(fundamental.marketCapCr / 100_000, 0, 1) * 4 +
+      clamp(1 - debtEquity / 10, 0, 1) * 5 +
+      clamp(roe / 20, 0, 1) * 6 +
+      clamp((growth + 5) / 20, 0, 1) * 5;
+    return {
+      score: round(score),
+      valid,
+      reason: valid ? null : 'NBFC leverage, ROE, or growth quality gate failed',
     };
   }
 
@@ -119,6 +140,7 @@ export function scoreCandidate(
     technical.close > technical.sma200 &&
     technical.rsi14 < 75 &&
     technical.atr14 > 0 &&
+    !technical.corporateActionGap &&
     setup !== 'Watch for breakout';
   const regimeValid = regime.label !== 'Defensive' && regime.label !== 'Unknown';
   const score = round(
@@ -130,6 +152,7 @@ export function scoreCandidate(
   const reasons = [
     !liquidityValid ? '20-day median turnover is below ₹5 crore' : null,
     !technicalValid ? 'Technical confirmation gate is incomplete' : null,
+    technical.corporateActionGap ? 'A large historical price gap may be an unadjusted corporate action' : null,
     !regimeValid ? `Market regime is ${regime.label.toLowerCase()}` : null,
     quality.reason,
   ].filter(Boolean) as string[];
@@ -139,6 +162,7 @@ export function scoreCandidate(
     name: instrument.companyName,
     sector: instrument.industry,
     isBank: instrument.isBank,
+    isNbfc: instrument.isNbfc,
     close: technical.close,
     change: technical.change,
     marketCapCr: fundamental?.marketCapCr ?? null,
@@ -146,6 +170,9 @@ export function scoreCandidate(
     opm: fundamental?.opm ?? null,
     roe: fundamental?.roe ?? null,
     salesGrowth: fundamental?.salesGrowth ?? null,
+    capitalAdequacy: fundamental?.capitalAdequacy ?? null,
+    grossNpa: fundamental?.grossNpa ?? null,
+    netNpa: fundamental?.netNpa ?? null,
     trend: round(trend),
     momentum: round(momentum),
     relativeStrength: round(relativeStrength),

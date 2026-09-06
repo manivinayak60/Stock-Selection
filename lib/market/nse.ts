@@ -60,13 +60,17 @@ export async function fetchNifty500Universe(): Promise<Instrument[]> {
     const series = row.Series;
     const isin = row['ISIN Code'];
     if (!symbol || !companyName || !industry || !series || !isin) return [];
+    const isBank = /\bbank\b/i.test(companyName) || /\bbank\b/i.test(industry);
+    const financeName = /\b(finance|financial|finserv|capital|credit|leasing|investments?)\b/i.test(companyName);
+    const excludedFinance = /\b(exchange|depository|rating|insurance|asset management|broker)\b/i.test(`${companyName} ${industry}`);
     return [{
       symbol,
       companyName,
       industry,
       series,
       isin,
-      isBank: /\bbank\b/i.test(companyName) || /\bbank\b/i.test(industry),
+      isBank,
+      isNbfc: !isBank && financeName && !excludedFinance,
     }];
   });
   if (instruments.length < 450 || instruments.length > 550) {

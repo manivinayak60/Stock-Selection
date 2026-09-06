@@ -30,6 +30,8 @@ The migrations are:
 
 `supabase/migrations/202609050001_broker_connections_and_retention.sql`
 
+`supabase/migrations/202609060001_quality_pipeline.sql`
+
 From the `webapp` folder, run:
 
 ```powershell
@@ -119,6 +121,16 @@ npm run data:fundamentals -- data/fundamentals.csv
 
 The scanner intentionally leaves a stock at **Watch** when required fundamentals are missing, stale, or fail the quality gates. Run the normal scan again after importing.
 
+You can also paste a saved Screener URL in **Settings -> Fundamental quality data** and upload the CSV exported by that screen. The importer recognises `NSE Code`, `Mar Cap Rs.Cr.`, `Debt / Eq`, `OPM %`, `ROE %`, and `Sales growth 3Years` without manual renaming. The URL is saved only as a convenient source link; SwingSignal does not scrape authenticated Screener pages.
+
+Fundamentals are versioned by symbol and source date. To measure the full model without look-ahead bias, import older dated snapshots as additional rows, then run:
+
+```powershell
+npm run data:backtest
+```
+
+The report compares score 70+ and score 80+ observations using subsequent 5, 10, and 20-session returns. An empty report means historical point-in-time fundamentals have not yet been supplied; it does not mean the strategy had no market opportunities.
+
 For an automated licensed feed, expose the same CSV at a private or access-controlled HTTPS URL and set `FUNDAMENTALS_CSV_URL` in Vercel. Each automatic or manual EOD sync imports the current file before recalculating scores. Do not configure a scraped page or a URL that you are not authorized to access.
 
 ## 9. Daily schedule
@@ -139,6 +151,8 @@ Open the Vercel URL in a private/incognito window and verify:
 6. A paper trade is blocked when it would exceed the configured hard-risk ceiling.
 7. Data health shows real universe, received, and validated counts.
 8. Clicking the avatar signs you out and returns to `/login`.
+9. A second EOD request while one is running returns a safe "already running" response.
+10. Data Health names any NSE-universe symbols missing from the latest bhavcopy.
 
 ## Optional live-provider setup
 
