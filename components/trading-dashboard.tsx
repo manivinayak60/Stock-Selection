@@ -12,6 +12,7 @@ import {
   Check,
   ChevronRight,
   CircleDollarSign,
+  Clock3,
   Database,
   ExternalLink,
   Gauge,
@@ -27,6 +28,7 @@ import {
   ShieldCheck,
   Sparkles,
   Star,
+  TrendingUp,
   X,
 } from 'lucide-react';
 import {
@@ -48,7 +50,6 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Progress } from '@/components/ui/progress';
-import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { SignOutButton } from '@/components/sign-out-button';
 import {
@@ -96,6 +97,7 @@ type MarketMeta = {
   qualifiedCount: number;
   failedCount: number;
   source: string;
+  completedAt: string | null;
   warnings: string[];
   missingSymbols: string[];
   stale: boolean;
@@ -124,6 +126,26 @@ const formatMarketDate = (date: string | null | undefined) =>
         timeZone: 'Asia/Kolkata',
       }).format(new Date(`${date}T12:00:00+05:30`))
     : 'No validated scan';
+const formatIstDateTime = (date: string | null | undefined) =>
+  date
+    ? new Intl.DateTimeFormat('en-IN', {
+        dateStyle: 'medium',
+        timeStyle: 'medium',
+        timeZone: 'Asia/Kolkata',
+      }).format(new Date(date)) + ' IST'
+    : 'Not synced yet';
+
+const currentMove = (stock: Opportunity) =>
+  stock.liveChangePercent ?? stock.change;
+
+const getNiftyBullish20 = (stocks: Opportunity[]) =>
+  [...stocks]
+    .filter((stock) => currentMove(stock) > 0)
+    .sort(
+      (a, b) =>
+        currentMove(b) - currentMove(a) || b.score - a.score,
+    )
+    .slice(0, 20);
 
 async function postState(
   payload: Record<string, unknown>,
@@ -883,6 +905,14 @@ export function TradingDashboard() {
         onClose={() => setSelected(null)}
         onToggleWatch={toggleWatchlist}
         onCreateTrade={createTrade}
+        paperTradeEligible={Boolean(
+          selected &&
+            (selected.status !== 'Watch' ||
+              selected.score >= 70 ||
+              getNiftyBullish20(opportunities).some(
+                (stock) => stock.symbol === selected.symbol,
+              )),
+        )}
       />
       {notice && (
         <output className="fixed bottom-5 right-5 z-[80] flex max-w-sm items-center gap-3 rounded-xl bg-slate-950 px-4 py-3 text-sm text-white shadow-2xl">
@@ -930,41 +960,50 @@ function DashboardView({
   );
   return (
     <div className="space-y-6">
-      <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
-        <div>
-          <p className="text-sm font-semibold text-emerald-700">
-            Morning brief
-          </p>
-          <h1 className="mt-1 text-3xl font-semibold tracking-[-.035em] md:text-4xl">
+      <section className="overflow-hidden rounded-3xl border border-slate-800 bg-[linear-gradient(125deg,#071b2f_0%,#0b2946_58%,#0f3d3a_100%)] p-6 text-white shadow-[0_24px_70px_rgba(7,27,47,.2)] md:p-8">
+        <div className="flex flex-col justify-between gap-6 lg:flex-row lg:items-end">
+          <div className="max-w-3xl">
+            <div className="flex flex-wrap items-center gap-2 text-sm font-semibold text-emerald-300">
+              <span className="rounded-full border border-emerald-300/20 bg-emerald-300/10 px-3 py-1">Morning brief</span>
+              <span className="flex items-center gap-1.5 text-xs font-medium text-slate-300">
+                <Clock3 className="size-3.5" /> Last EOD sync {formatIstDateTime(marketMeta?.completedAt)}
+              </span>
+            </div>
+            <h1 className="mt-4 text-3xl font-semibold tracking-[-.035em] md:text-4xl">
             {marketError
               ? 'Market scan unavailable.'
               : qualified.length
               ? `${qualified.length} setups deserve attention.`
               : 'No qualified trade today.'}
           </h1>
-          <p className="mt-2 text-sm text-slate-500">
-            Completed EOD signals for a 3–20 session holding window. Confirm
-            live price after market open.
-          </p>
+            <p className="mt-3 max-w-2xl text-sm leading-relaxed text-slate-300">
+              Signals use prices and history through the previous completed NSE session for a 3–20 session holding window. This is not an intraday scan.
+            </p>
+          </div>
+          <div className="shrink-0">
+            <Button
+              size="lg"
+              onClick={onRunScan}
+              disabled={scanState === 'running'}
+              className="h-12 w-full bg-emerald-400 px-5 text-slate-950 shadow-lg shadow-emerald-950/20 hover:bg-emerald-300 lg:w-auto"
+            >
+              {scanState === 'running' ? (
+                <LoaderCircle className="animate-spin" />
+              ) : (
+                <RefreshCw />
+              )}{' '}
+              {scanState === 'running'
+                ? 'Syncing latest NSE EOD…'
+                : scanState === 'complete'
+                  ? 'EOD sync complete'
+                  : 'Sync latest NSE EOD'}
+            </Button>
+            <p className="mt-2 text-center text-xs text-slate-400 lg:text-right">
+              Downloads the latest completed day and rebuilds all scores
+            </p>
+          </div>
         </div>
-        <Button
-          size="lg"
-          onClick={onRunScan}
-          disabled={scanState === 'running'}
-          className="h-11 bg-slate-950 px-4 text-white hover:bg-slate-800"
-        >
-          {scanState === 'running' ? (
-            <LoaderCircle className="animate-spin" />
-          ) : (
-            <RefreshCw />
-          )}{' '}
-          {scanState === 'running'
-            ? 'Scanning 500 stocks…'
-            : scanState === 'complete'
-              ? 'Scan complete'
-              : 'Refresh NSE scan'}
-        </Button>
-      </div>
+      </section>
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <MetricCard
           label="Market regime"
@@ -1210,7 +1249,11 @@ function OpportunitiesView({
     `${stock.symbol} ${stock.name} ${stock.sector}`
       .toLowerCase()
       .includes(filter.toLowerCase());
-  const cards = (stocks: Opportunity[], emptyText: string) => {
+  const cards = (
+    stocks: Opportunity[],
+    emptyText: string,
+    options?: { ranked?: boolean; paperTrade?: boolean },
+  ) => {
     const visible = stocks.filter(matches);
     if (!visible.length) {
       return (
@@ -1223,12 +1266,17 @@ function OpportunitiesView({
     }
     return (
     <div className="grid gap-4 xl:grid-cols-2">
-      {visible.map((stock) => (
-        <article key={stock.symbol} className="group relative overflow-hidden rounded-2xl border border-slate-200 bg-white p-5 shadow-[0_2px_5px_rgba(15,23,42,.04)] transition duration-200 hover:-translate-y-0.5 hover:border-emerald-200 hover:shadow-[0_18px_45px_rgba(15,23,42,.09)]">
+      {visible.map((stock, index) => (
+        <article key={stock.symbol} className="group relative overflow-hidden rounded-2xl border border-slate-200/90 bg-white p-5 shadow-[0_8px_30px_rgba(15,23,42,.055)] transition duration-200 hover:-translate-y-0.5 hover:border-emerald-300 hover:shadow-[0_20px_50px_rgba(15,23,42,.11)]">
           <div className={`absolute inset-x-0 top-0 h-1 ${stock.score >= 70 ? 'bg-emerald-500' : stock.score >= 50 ? 'bg-amber-400' : 'bg-slate-300'}`} />
           <div className="flex items-start justify-between gap-3">
             <div>
               <div className="flex items-center gap-2">
+                {options?.ranked && (
+                  <span className="grid size-7 place-items-center rounded-lg bg-blue-950 text-xs font-bold text-white">
+                    {index + 1}
+                  </span>
+                )}
                 <h3 className="text-lg font-semibold">{stock.symbol}</h3>
                 <StatusPill status={stock.status} />
               </div>
@@ -1280,7 +1328,13 @@ function OpportunitiesView({
               <MiniChart values={stock.prices} />
             </div>
           </div>
-          <div className="mt-5 grid grid-cols-3 gap-2 rounded-xl bg-slate-50 p-3 text-sm">
+          <div className="mt-5 grid grid-cols-4 gap-2 rounded-xl border border-slate-100 bg-slate-50/80 p-3 text-sm">
+            <div>
+              <p className="text-xs text-slate-500">Day move</p>
+              <p className={`mt-1 font-semibold ${currentMove(stock) >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
+                {currentMove(stock) >= 0 ? '+' : ''}{currentMove(stock).toFixed(2)}%
+              </p>
+            </div>
             <div>
               <p className="text-xs text-slate-500">Entry</p>
               <p className="mt-1 font-semibold">{money(stock.entryHigh, 0)}</p>
@@ -1301,13 +1355,20 @@ function OpportunitiesView({
           <p className="mt-4 line-clamp-2 text-sm leading-relaxed text-slate-600">
             {stock.thesis}
           </p>
-          <Button
-            className="mt-4 w-full"
-            variant="outline"
-            onClick={() => onReview(stock)}
-          >
-            Open analysis <ChevronRight />
-          </Button>
+          <div className="mt-4 grid gap-2 sm:grid-cols-2">
+            <Button
+              className={options?.paperTrade ? '' : 'sm:col-span-2'}
+              variant="outline"
+              onClick={() => onReview(stock)}
+            >
+              Open analysis <ChevronRight />
+            </Button>
+            {options?.paperTrade && (
+              <Button onClick={() => onReview(stock)}>
+                <BriefcaseBusiness /> Review paper trade
+              </Button>
+            )}
+          </div>
         </article>
       ))}
     </div>
@@ -1316,30 +1377,34 @@ function OpportunitiesView({
   const qualifiedStocks = opportunities.filter((stock) => stock.status !== 'Watch');
   const topScoreStocks = opportunities.filter((stock) => stock.score >= 70);
   const nextScoreStocks = opportunities.filter((stock) => stock.score >= 50 && stock.score < 70);
+  const niftyBullish20 = getNiftyBullish20(opportunities);
   return (
     <div className="space-y-5">
-      <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
-        <div>
-          <h1 className="page-title">Daily opportunities</h1>
-          <p className="page-subtitle">
-            Companies and banks use separate quality rules before a common
-            trade-readiness score.
-          </p>
+      <section className="rounded-3xl border border-blue-100 bg-[linear-gradient(135deg,#ffffff_0%,#f0f7ff_55%,#ecfdf5_100%)] p-6 shadow-[0_18px_50px_rgba(15,23,42,.06)]">
+        <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
+          <div>
+            <div className="flex items-center gap-2 text-sm font-semibold text-blue-800"><TrendingUp className="size-4" /> Latest ranked market</div>
+            <h1 className="mt-2 page-title">Daily opportunities</h1>
+            <p className="page-subtitle">
+              Compare validated setups, high-score ideas and the latest Nifty 500 bullish leaders in one place.
+            </p>
+          </div>
+          <label className="relative block">
+            <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
+            <input
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+              placeholder="Search stock or sector"
+              className="h-11 w-full rounded-xl border border-slate-200 bg-white pl-9 pr-3 text-sm shadow-sm outline-none focus:border-emerald-500 sm:w-72"
+            />
+          </label>
         </div>
-        <label className="relative block">
-          <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
-          <input
-            value={filter}
-            onChange={(e) => setFilter(e.target.value)}
-            placeholder="Search stock or sector"
-            className="h-10 w-full rounded-xl border border-slate-200 bg-white pl-9 pr-3 text-sm outline-none focus:border-emerald-500 sm:w-64"
-          />
-        </label>
-      </div>
+      </section>
       <Tabs defaultValue={qualifiedStocks.length ? 'qualified' : topScoreStocks.length ? 'top' : 'next'}>
-        <TabsList className="h-auto flex-wrap bg-white p-1 shadow-sm" variant="default">
+        <TabsList className="h-auto flex-wrap border border-slate-200 bg-white p-1.5 shadow-sm" variant="default">
           <TabsTrigger value="qualified">Qualified ({qualifiedStocks.length})</TabsTrigger>
           <TabsTrigger value="top">Top score 70+ ({topScoreStocks.length})</TabsTrigger>
+          <TabsTrigger value="nifty">Nifty bullish 20 ({niftyBullish20.length})</TabsTrigger>
           <TabsTrigger value="next">Next 50–69 ({nextScoreStocks.length})</TabsTrigger>
           <TabsTrigger value="companies">Companies</TabsTrigger>
           <TabsTrigger value="banks">Banks & financials</TabsTrigger>
@@ -1349,7 +1414,14 @@ function OpportunitiesView({
           {cards(qualifiedStocks, 'No stock currently passes every technical, liquidity, market-regime and fundamental quality gate.')}
         </TabsContent>
         <TabsContent value="top" className="mt-4">
-          {cards(topScoreStocks, 'No stock currently has a composite score of 70 or more.')}
+          {cards(topScoreStocks, 'No stock currently has a composite score of 70 or more.', { paperTrade: true })}
+        </TabsContent>
+        <TabsContent value="nifty" className="mt-4">
+          <div className="mb-4 flex items-start gap-3 rounded-xl border border-blue-200 bg-blue-50 p-4 text-sm text-blue-950">
+            <TrendingUp className="mt-0.5 size-4 shrink-0" />
+            <p>Top 20 positive movers from the current Nifty 500 scan, ranked by the latest available day-change. A connected broker uses its live change; otherwise the latest NSE EOD change is used. Composite score breaks ties.</p>
+          </div>
+          {cards(niftyBullish20, 'No positive-moving Nifty 500 candidates are available in the latest scan.', { ranked: true, paperTrade: true })}
         </TabsContent>
         <TabsContent value="next" className="mt-4">
           {cards(nextScoreStocks, 'No developing setup currently has a score between 50 and 69.')}
@@ -1976,19 +2048,27 @@ function SettingsView({
           still apply until the page reloads.
         </div>
       )}
-      <article className="overflow-hidden rounded-2xl border border-emerald-200 bg-gradient-to-br from-emerald-950 via-slate-950 to-slate-900 p-5 text-white shadow-[0_18px_60px_rgba(6,78,59,.16)]">
+      <article className="overflow-hidden rounded-3xl border border-emerald-300/30 bg-[linear-gradient(125deg,#071b2f_0%,#0b2946_56%,#075545_100%)] p-6 text-white shadow-[0_24px_70px_rgba(7,27,47,.2)]">
         <div className="flex flex-col justify-between gap-5 md:flex-row md:items-center">
           <div className="max-w-2xl">
             <div className="flex items-center gap-2 text-sm font-semibold text-emerald-300">
               <RefreshCw className="size-4" /> NSE end-of-day sync
             </div>
-            <h2 className="mt-2 text-xl font-semibold">Refresh the bullish shortlist whenever you need it</h2>
+            <h2 className="mt-2 text-2xl font-semibold tracking-tight">Update prices, indicators and bullish rankings</h2>
             <p className="mt-2 text-sm leading-relaxed text-slate-300">
-              Use this after the market closes or before your 9 AM review. It downloads the latest completed NSE session, updates indicators and rebuilds every score.
+              This is the same NSE EOD pipeline used by the Morning brief. It downloads the latest completed trading session—not live intraday data—then recalculates indicators, rankings and trade plans.
             </p>
-            <p className="mt-3 text-xs text-slate-400">
-              Latest saved session: {formatMarketDate(marketMeta?.marketDate)} · Automatic weekday sync remains scheduled for 10:30 PM IST.
-            </p>
+            <div className="mt-4 grid gap-2 text-xs sm:grid-cols-2">
+              <div className="rounded-xl border border-white/10 bg-white/[.06] p-3">
+                <p className="text-slate-400">Latest market session</p>
+                <p className="mt-1 font-semibold text-white">{formatMarketDate(marketMeta?.marketDate)}</p>
+              </div>
+              <div className="rounded-xl border border-white/10 bg-white/[.06] p-3">
+                <p className="text-slate-400">Last successful sync</p>
+                <p className="mt-1 font-semibold text-white">{formatIstDateTime(marketMeta?.completedAt)}</p>
+              </div>
+            </div>
+            <p className="mt-3 text-xs text-slate-400">Automatic weekday sync: 10:30 PM IST · Manual sync is safe before your 9 AM review.</p>
           </div>
           <Button
             size="lg"
@@ -2080,7 +2160,10 @@ function SettingsView({
                 action={groww?.connected ? (
                   <Button variant="outline" size="sm" onClick={() => void onDisconnectBroker('GROWW_CONNECT')}>Disconnect</Button>
                 ) : (
-                  <Button size="sm" onClick={() => setGrowwDialogOpen(true)} disabled={!groww?.configured}>Connect Groww</Button>
+                  <div className="flex flex-wrap gap-2">
+                    <Button variant="outline" size="sm" onClick={() => setGrowwDialogOpen(true)}>Setup steps</Button>
+                    <Button size="sm" onClick={() => setGrowwDialogOpen(true)} disabled={!groww?.configured}>Connect Groww</Button>
+                  </div>
                 )}
               />
             </div>
@@ -2088,49 +2171,31 @@ function SettingsView({
               Live providers update prices every 30 seconds while this dashboard is open. Historical scoring still comes from validated NSE EOD data.
             </p>
           </div>
-          <div className="panel p-5">
-            <div className="flex items-center justify-between">
+          <div className="rounded-2xl border border-blue-200 bg-gradient-to-br from-blue-950 to-slate-950 p-5 text-white shadow-[0_16px_45px_rgba(30,58,138,.14)]">
+            <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
               <div>
-                <h2 className="font-semibold">Future strategy modes</h2>
-                <p className="text-xs text-slate-500">
-                  Kept behind feature flags until separately validated.
-                </p>
+                <div className="flex items-center gap-2 text-sm font-semibold"><Bell className="size-4 text-blue-300" /> Browser scan alerts</div>
+                <p className="mt-2 text-xs leading-relaxed text-slate-300">Notify this device when a manually started EOD sync finishes. No trading orders are placed.</p>
               </div>
-              <Switch aria-label="Future strategy modes disabled" disabled />
-            </div>
-            <div className="mt-4 flex gap-2">
-              <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-500">
-                Intraday · Coming later
-              </span>
-              <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-500">
-                F&O · Coming later
-              </span>
-            </div>
-            <div className="mt-5 border-t border-slate-100 pt-4">
-              <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
-                <div>
-                  <p className="text-sm font-semibold">Browser scan alerts</p>
-                  <p className="mt-1 text-xs text-slate-500">Notify this device when an in-page EOD scan finishes.</p>
-                </div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={async () => {
-                    if (typeof Notification === 'undefined') return;
-                    if (browserAlerts) {
-                      window.localStorage.removeItem('swing-signal-browser-alerts');
-                      setBrowserAlerts(false);
-                      return;
-                    }
-                    if (await Notification.requestPermission() === 'granted') {
-                      window.localStorage.setItem('swing-signal-browser-alerts', 'enabled');
-                      setBrowserAlerts(true);
-                    }
-                  }}
-                >
-                  <Bell /> {browserAlerts ? 'Disable alerts' : 'Enable alerts'}
-                </Button>
-              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                className="border-white/20 bg-white/10 text-white hover:bg-white/20 hover:text-white"
+                onClick={async () => {
+                  if (typeof Notification === 'undefined') return;
+                  if (browserAlerts) {
+                    window.localStorage.removeItem('swing-signal-browser-alerts');
+                    setBrowserAlerts(false);
+                    return;
+                  }
+                  if (await Notification.requestPermission() === 'granted') {
+                    window.localStorage.setItem('swing-signal-browser-alerts', 'enabled');
+                    setBrowserAlerts(true);
+                  }
+                }}
+              >
+                {browserAlerts ? 'Disable alerts' : 'Enable alerts'}
+              </Button>
             </div>
           </div>
         </article>
@@ -2220,21 +2285,37 @@ function SettingsView({
         </Button>
       </div>
       <Dialog open={growwDialogOpen} onOpenChange={setGrowwDialogOpen}>
-        <DialogContent className="sm:max-w-lg">
+        <DialogContent className="max-h-[92vh] overflow-y-auto sm:max-w-xl">
           <DialogHeader>
-            <DialogTitle>Connect Groww</DialogTitle>
+            <DialogTitle>Set up Groww Trading API</DialogTitle>
             <DialogDescription>
-              Generate today&apos;s access token from Groww Trading APIs and paste it here. It is encrypted before being saved and normally expires at 6 AM.
+              SwingSignal uses a read-only market quote check in this workflow. It does not place broker orders.
             </DialogDescription>
           </DialogHeader>
+          <ol className="space-y-3 text-sm leading-relaxed text-slate-700">
+            <li><strong>1.</strong> Open Groww, sign in, select your profile, open <strong>Settings</strong>, then choose <strong>Trading APIs</strong>.</li>
+            <li><strong>2.</strong> Activate the required Trading API subscription if Groww asks for one.</li>
+            <li><strong>3.</strong> Choose <strong>Generate API keys</strong>, select <strong>Access Token</strong>, and generate today&apos;s token. Groww access tokens expire daily at 6:00 AM.</li>
+            <li><strong>4.</strong> Make sure <code>BROKER_TOKEN_ENCRYPTION_KEY</code> is configured in Vercel. SwingSignal needs it to encrypt the token before storage.</li>
+            <li><strong>5.</strong> Paste the access token below, connect, select Groww as the provider, and save Settings.</li>
+            <li><strong>6.</strong> Generate and reconnect with a new token after expiry. NSE EOD continues as the fallback when Groww is disconnected.</li>
+          </ol>
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-blue-200 bg-blue-50 p-3 text-xs text-blue-950">
+            <span>Official instructions and current API limits</span>
+            <a href="https://groww.in/trade-api/docs/curl" target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 font-semibold text-blue-800 hover:underline">Open Groww API docs <ExternalLink className="size-3.5" /></a>
+          </div>
+          <div className={`rounded-xl border p-3 text-xs leading-relaxed ${groww?.configured ? 'border-emerald-200 bg-emerald-50 text-emerald-900' : 'border-amber-200 bg-amber-50 text-amber-900'}`}>
+            Current status: {groww?.configured ? 'secure token encryption is configured; paste today’s token to connect.' : 'BROKER_TOKEN_ENCRYPTION_KEY is missing in Vercel. Add it and redeploy before connecting.'}
+          </div>
           <label className="block text-sm font-medium">
-            Groww access token
+            Today&apos;s Groww access token
             <textarea
               value={growwToken}
               onChange={(event) => setGrowwToken(event.target.value)}
               rows={4}
               autoComplete="off"
               spellCheck={false}
+              disabled={!groww?.configured}
               className="mt-2 w-full resize-none rounded-xl border border-slate-200 p-3 font-mono text-sm outline-none focus:border-emerald-500"
               placeholder="Paste the token generated in Groww"
             />
@@ -2243,7 +2324,7 @@ function SettingsView({
           <DialogFooter>
             <Button variant="outline" onClick={() => setGrowwDialogOpen(false)}>Cancel</Button>
             <Button
-              disabled={brokerBusy || growwToken.trim().length < 20}
+              disabled={!groww?.configured || brokerBusy || growwToken.trim().length < 20}
               onClick={async () => {
                 setBrokerBusy(true);
                 setBrokerError(null);
@@ -2338,6 +2419,7 @@ function OpportunityDialog({
   onClose,
   onToggleWatch,
   onCreateTrade,
+  paperTradeEligible,
 }: {
   stock: Opportunity | null;
   watchlisted: boolean;
@@ -2346,6 +2428,7 @@ function OpportunityDialog({
   onClose: () => void;
   onToggleWatch: (s: string) => void;
   onCreateTrade: (o: Opportunity) => void;
+  paperTradeEligible: boolean;
 }) {
   if (!stock) return null;
   const support = Number.isFinite(stock.support)
@@ -2355,7 +2438,7 @@ function OpportunityDialog({
     ? stock.resistance
     : Math.max(...stock.prices.slice(-20));
   const blocked =
-    stock.status === 'Watch' ||
+    !paperTradeEligible ||
     stock.quantity < 1 ||
     openRisk + stock.plannedRisk > hardRisk;
   return (
@@ -2494,8 +2577,8 @@ function OpportunityDialog({
           </Button>
           <Button disabled={blocked} onClick={() => onCreateTrade(stock)}>
             {blocked
-              ? stock.status === 'Watch'
-                ? 'Wait for trigger'
+              ? !paperTradeEligible
+                ? 'Paper trade from Top 70+ or Nifty 20'
                 : 'Risk limit blocks entry'
               : 'Create paper trade'}
           </Button>
