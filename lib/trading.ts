@@ -106,6 +106,11 @@ export type PaperTrade = {
   closedAt?: string | null;
   exitPrice?: number | null;
   notes?: string;
+  signalScore?: number | null;
+  signalStatus?: CandidateSnapshot['status'] | null;
+  signalMarketDate?: string | null;
+  evidenceStatus?: CandidateSnapshot['evidenceStatus'] | null;
+  exitReason?: string | null;
 };
 
 export const defaultSettings: Settings = {
@@ -124,6 +129,11 @@ const round = (value: number, digits = 2) => Number(value.toFixed(digits));
 export function buildOpportunities(
   settings: Settings,
   candidates: CandidateSnapshot[] = [],
+  portfolio: {
+    openRisk?: number;
+    invested?: number;
+    sectorInvested?: ReadonlyMap<string, number>;
+  } = {},
 ): Opportunity[] {
   return candidates
     .map((candidate) => {
@@ -133,11 +143,18 @@ export function buildOpportunities(
       const entryHigh = planningPrice + candidate.atr * 0.18;
       const stop = entryLow - stopDistance;
       const riskPerShare = entryHigh - stop;
+      const remainingRisk = Math.max(0, settings.hardRisk - (portfolio.openRisk ?? 0));
+      const remainingCapital = Math.max(0, settings.capital - (portfolio.invested ?? 0));
+      const sectorRoom = Math.max(
+        0,
+        settings.capital * (settings.maxSectorAllocation / 100) -
+          (portfolio.sectorInvested?.get(candidate.sector) ?? 0),
+      );
       const quantity = Math.max(
         0,
         Math.min(
-          Math.floor(Math.min(settings.perStockRisk, settings.hardRisk) / riskPerShare),
-          Math.floor((settings.capital * (settings.maxSectorAllocation / 100)) / entryHigh),
+          Math.floor(Math.min(settings.perStockRisk, remainingRisk) / riskPerShare),
+          Math.floor(Math.min(remainingCapital, sectorRoom) / entryHigh),
         ),
       );
       return {
@@ -155,6 +172,32 @@ export function buildOpportunities(
       };
     })
     .sort((a, b) => b.score - a.score);
+}
+
+export function bullishLeaderScore(candidate: CandidateSnapshot) {
+  const move = candidate.liveChangePercent ?? candidate.change;
+  const evidenceBonus = candidate.status === 'Strong' ? 12 : candidate.status === 'Qualified' ? 8 : 0;
+  const setupBonus = candidate.setup === 'Confirmed breakout'
+    ? 8
+    : candidate.setup === 'Pullback opportunity'
+      ? 5
+      : candidate.setup === 'Momentum continuation'
+        ? 4
+        : 0;
+  return candidate.score + evidenceBonus + setupBonus + move * 1.5 +
+    Math.min(candidate.relativeStrength, 15) * 0.35 +
+    Math.min(candidate.relativeVolume20, 2.5) * 2;
+}
+
+export function getBullishLeaders<T extends CandidateSnapshot>(stocks: T[], limit = 20) {
+  return [...stocks]
+    .filter((stock) => {
+      const move = stock.liveChangePercent ?? stock.change;
+      return move > 0 && stock.rsi14 <= 72 && stock.trend >= 15 &&
+        stock.momentum >= 6 && stock.setup !== 'Watch for breakout';
+    })
+    .sort((a, b) => bullishLeaderScore(b) - bullishLeaderScore(a) || b.score - a.score)
+    .slice(0, limit);
 }
 
 export const performanceSeries: {

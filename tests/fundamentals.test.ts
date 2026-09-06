@@ -35,3 +35,18 @@ void test('Screener exports are mapped without manual column renaming', () => {
   assert.equal(rows[0].source_name, 'Screener.in export');
   assert.equal(rows[0].source_url, 'https://www.screener.in/screens/123/test/');
 });
+
+void test('fundamental CSV rejects impossible, future and unsafe ratio values', () => {
+  assert.throws(
+    () => parseFundamentalCsv(`${header}\nTEST,2099-01-01,12000,0.4,18,16,12,,,,Source,`),
+    /Future/,
+  );
+  assert.throws(
+    () => parseFundamentalCsv(`${header}\nTEST,2026-02-31,12000,0.4,18,16,12,,,,Source,`),
+    /Invalid as_of_date/,
+  );
+  assert.throws(
+    () => parseFundamentalCsv(`${header}\nTEST,2026-06-30,12000,0.4,18,16,12,,-1,,Source,`),
+    /gross_npa/,
+  );
+});

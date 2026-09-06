@@ -1,7 +1,9 @@
 import { NextResponse } from 'next/server';
 
 import type { CandidateSnapshot } from '@/lib/trading';
+import { candidateSessionDates } from '@/lib/market/nse';
 import { createClient } from '@/lib/supabase/server';
+import { createAdminClient } from '@/lib/supabase/admin';
 
 export const dynamic = 'force-dynamic';
 
@@ -46,11 +48,20 @@ export async function GET() {
   if (historyResult.error) {
     console.error('Unable to load market scan history', historyResult.error);
   }
+  const eventResult = await supabase
+    .from('pipeline_events')
+    .select('level,stage,message,created_at')
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  const storageResult = await createAdminClient().rpc('get_swing_signal_database_bytes');
 
   const marketDate = String(runResult.data.market_date);
-  const ageDays = Math.floor(
-    (Date.now() - Date.parse(`${marketDate}T00:00:00+05:30`)) / 86_400_000,
-  );
+  // Accept the two most recent expected weekday sessions. This covers a
+  // one-day exchange holiday without treating a several-day-old weekday scan
+  // as current.
+  const acceptableSessions = candidateSessionDates(new Date(), 2)
+    .map((date) => date.toISOString().slice(0, 10));
   return NextResponse.json({
     candidates: (candidateResult.data ?? []).map(
       (row) => row.payload as CandidateSnapshot,
@@ -69,7 +80,13 @@ export async function GET() {
       completedAt: runResult.data.completed_at,
       warnings: runResult.data.warnings ?? [],
       missingSymbols: runResult.data.missing_symbols ?? [],
-      stale: ageDays > 5,
+      stale: !acceptableSessions.includes(marketDate),
+      lastPipelineError: eventResult.error || !eventResult.data || eventResult.data.level !== 'ERROR' ? null : {
+        stage: eventResult.data.stage,
+        message: eventResult.data.message,
+        createdAt: eventResult.data.created_at,
+      },
+      databaseBytes: storageResult.error ? null : Number(storageResult.data),
     },
     history: (historyResult.data ?? []).map((run) => ({
       id: run.id,

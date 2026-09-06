@@ -19,8 +19,8 @@ import { createAdminClient } from '../lib/supabase/admin';
 const { loadEnvConfig } = nextEnv;
 loadEnvConfig(process.cwd());
 
-const TARGET_SESSIONS = 260;
-const MAX_CALENDAR_DAYS = 430;
+const TARGET_SESSIONS = Math.max(260, Number(process.env.BACKFILL_SESSIONS ?? 756));
+const MAX_CALENDAR_DAYS = Math.ceil(TARGET_SESSIONS * 1.75);
 
 function startDate() {
   return candidateSessionDates(new Date(), 1)[0];

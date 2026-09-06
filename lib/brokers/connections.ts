@@ -69,3 +69,16 @@ export async function disconnectBroker(userId: string, provider: LiveProvider) {
     .eq('provider', provider);
   if (error) throw new Error(error.message);
 }
+
+export async function markBrokerConnectionStatus(
+  userId: string,
+  provider: LiveProvider,
+  status: StoredBrokerConnection['status'],
+) {
+  const { error } = await createAdminClient()
+    .from('broker_connections')
+    .update({ status, last_verified_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+    .eq('user_id', userId)
+    .eq('provider', provider);
+  if (error) throw new Error(error.message);
+}

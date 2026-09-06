@@ -55,6 +55,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { SignOutButton } from '@/components/sign-out-button';
 import {
   buildOpportunities,
+  getBullishLeaders,
   defaultSettings,
   type CandidateSnapshot,
   type BrokerConnectionStatus,
@@ -102,6 +103,8 @@ type MarketMeta = {
   warnings: string[];
   missingSymbols: string[];
   stale: boolean;
+  lastPipelineError: { stage: string; message: string; createdAt: string } | null;
+  databaseBytes: number | null;
 };
 
 const nav: { id: ViewId; label: string; icon: typeof LayoutDashboard }[] = [
@@ -139,14 +142,7 @@ const formatIstDateTime = (date: string | null | undefined) =>
 const currentMove = (stock: Opportunity) =>
   stock.liveChangePercent ?? stock.change;
 
-const getNiftyBullish20 = (stocks: Opportunity[]) =>
-  [...stocks]
-    .filter((stock) => currentMove(stock) > 0)
-    .sort(
-      (a, b) =>
-        currentMove(b) - currentMove(a) || b.score - a.score,
-    )
-    .slice(0, 20);
+const getNiftyBullish20 = (stocks: Opportunity[]) => getBullishLeaders(stocks, 20);
 
 async function postState(
   payload: Record<string, unknown>,
@@ -269,6 +265,9 @@ export function TradingDashboard() {
   const [trades, setTrades] = useState<PaperTrade[]>([]);
   const [runs, setRuns] = useState<ScanRun[]>([]);
   const [selected, setSelected] = useState<Opportunity | null>(null);
+  const [closingTrade, setClosingTrade] = useState<PaperTrade | null>(null);
+  const [exitPriceDraft, setExitPriceDraft] = useState('');
+  const [exitReasonDraft, setExitReasonDraft] = useState('Manual exit');
   const [filter, setFilter] = useState('');
   const [scanState, setScanState] = useState<'idle' | 'running' | 'complete'>(
     'idle',
@@ -305,11 +304,6 @@ export function TradingDashboard() {
     });
   }, [brokerConnections, liveQuotes, marketCandidates, settings.provider]);
 
-  const opportunities = useMemo(
-    () => buildOpportunities(settings, candidatesWithLivePrices),
-    [candidatesWithLivePrices, settings],
-  );
-  const qualified = opportunities.filter((o) => o.status !== 'Watch');
   const openTrades = trades.filter((t) => t.status === 'OPEN');
   const closedTrades = trades.filter((t) => t.status === 'CLOSED');
   const openRisk = openTrades.reduce(
@@ -317,6 +311,19 @@ export function TradingDashboard() {
     0,
   );
   const invested = openTrades.reduce((sum, t) => sum + t.entry * t.quantity, 0);
+  const sectorInvested = useMemo(() => {
+    const values = new Map<string, number>();
+    for (const trade of openTrades) {
+      const sector = trade.sector ?? 'Unknown';
+      values.set(sector, (values.get(sector) ?? 0) + trade.entry * trade.quantity);
+    }
+    return values;
+  }, [openTrades]);
+  const opportunities = useMemo(
+    () => buildOpportunities(settings, candidatesWithLivePrices, { openRisk, invested, sectorInvested }),
+    [candidatesWithLivePrices, invested, openRisk, sectorInvested, settings],
+  );
+  const qualified = opportunities.filter((o) => o.status !== 'Watch');
   const availableCapital = Math.max(0, settings.capital - invested);
 
   const notify = useCallback((message: string) => {
@@ -409,12 +416,14 @@ export function TradingDashboard() {
     }
     let stopped = false;
     const refresh = async () => {
-      const symbols = marketCandidates.slice(0, 50).map((item) => item.symbol).join(',');
+      const symbols = marketCandidates.map((item) => item.symbol);
       try {
-        const response = await fetch(
-          `/api/brokers/quotes?provider=${settings.provider}&symbols=${encodeURIComponent(symbols)}`,
-          { cache: 'no-store' },
-        );
+        const response = await fetch('/api/brokers/quotes', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ provider: settings.provider, symbols }),
+          cache: 'no-store',
+        });
         const data = await response.json() as { quotes?: Omit<LiveQuote, 'provider'>[] };
         if (response.ok && !stopped) {
           setLiveQuotes((data.quotes ?? []).map((quote) => ({ ...quote, provider: settings.provider as Exclude<Settings['provider'], 'FREE_EOD'> })));
@@ -472,6 +481,7 @@ export function TradingDashboard() {
       const tempTrade: PaperTrade = {
         id: -Date.now(),
         symbol: stock.symbol,
+        sector: stock.sector,
         setup: stock.setup,
         status: 'OPEN',
         entry: stock.entryHigh,
@@ -479,6 +489,10 @@ export function TradingDashboard() {
         target: stock.target1,
         quantity: stock.quantity,
         openedAt: new Date().toISOString(),
+        signalScore: stock.score,
+        signalStatus: stock.status,
+        signalMarketDate: stock.asOfDate,
+        evidenceStatus: stock.evidenceStatus,
       };
       setTrades((current) => [tempTrade, ...current]);
       setSelected(null);
@@ -487,6 +501,10 @@ export function TradingDashboard() {
           action: 'createTrade',
           trade: tempTrade,
           sector: stock.sector,
+          signalScore: stock.score,
+          signalStatus: stock.status,
+          signalMarketDate: stock.asOfDate,
+          evidenceStatus: stock.evidenceStatus,
         });
         setTrades((current) =>
           current.map((t) =>
@@ -516,10 +534,7 @@ export function TradingDashboard() {
   );
 
   const closeTrade = useCallback(
-    async (trade: PaperTrade) => {
-      const exitPrice =
-        opportunities.find((o) => o.symbol === trade.symbol)?.close ??
-        trade.entry;
+    async (trade: PaperTrade, exitPrice: number, exitReason: string) => {
       setTrades((current) =>
         current.map((t) =>
           t.id === trade.id
@@ -527,6 +542,7 @@ export function TradingDashboard() {
                 ...t,
                 status: 'CLOSED',
                 exitPrice,
+                exitReason,
                 closedAt: new Date().toISOString(),
               }
             : t,
@@ -534,7 +550,7 @@ export function TradingDashboard() {
       );
       if (trade.id > 0) {
         try {
-          await postState({ action: 'closeTrade', id: trade.id, exitPrice });
+          await postState({ action: 'closeTrade', id: trade.id, exitPrice, exitReason });
         } catch {
           setTrades((current) =>
             current.map((item) => (item.id === trade.id ? trade : item)),
@@ -545,8 +561,11 @@ export function TradingDashboard() {
         }
       }
       notify(`${trade.symbol} paper trade closed at ${money(exitPrice, 2)}`);
+      setClosingTrade(null);
+      setExitPriceDraft('');
+      setExitReasonDraft('Manual exit');
     },
-    [notify, opportunities],
+    [notify],
   );
 
   const runScan = useCallback(async () => {
@@ -826,7 +845,6 @@ export function TradingDashboard() {
         <div className="mx-auto max-w-[1500px] p-5 md:p-8">
           {view === 'dashboard' && (
             <DashboardView
-              opportunities={opportunities}
               qualified={qualified}
               settings={settings}
               openRisk={openRisk}
@@ -865,7 +883,12 @@ export function TradingDashboard() {
               openRisk={openRisk}
               settings={settings}
               invested={invested}
-              onClose={closeTrade}
+              onClose={(trade) => {
+                const latest = opportunities.find((item) => item.symbol === trade.symbol)?.close;
+                setClosingTrade(trade);
+                setExitPriceDraft(latest ? latest.toFixed(2) : '');
+                setExitReasonDraft('Manual exit');
+              }}
             />
           )}
           {view === 'journal' && (
@@ -915,6 +938,55 @@ export function TradingDashboard() {
               )),
         )}
       />
+      <Dialog open={Boolean(closingTrade)} onOpenChange={(open) => !open && setClosingTrade(null)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Close {closingTrade?.symbol} paper trade</DialogTitle>
+            <DialogDescription>
+              Enter the price at which you actually exited. The suggested value is only the latest available app price—verify it with your broker.
+            </DialogDescription>
+          </DialogHeader>
+          <label className="space-y-2 text-sm font-medium">
+            Exit price (₹)
+            <input
+              type="number"
+              min="0.01"
+              step="0.01"
+              value={exitPriceDraft}
+              onChange={(event) => setExitPriceDraft(event.target.value)}
+              className="h-11 w-full rounded-xl border border-slate-200 px-3 outline-none focus:border-emerald-500"
+            />
+          </label>
+          <label className="space-y-2 text-sm font-medium">
+            Exit reason
+            <select
+              value={exitReasonDraft}
+              onChange={(event) => setExitReasonDraft(event.target.value)}
+              className="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 outline-none focus:border-emerald-500"
+            >
+              <option>Manual exit</option>
+              <option>Stop loss reached</option>
+              <option>Target reached</option>
+              <option>Setup invalidated</option>
+              <option>Time exit</option>
+            </select>
+          </label>
+          {closingTrade && Number(exitPriceDraft) > 0 && (
+            <p className={`rounded-xl p-3 text-sm font-semibold ${Number(exitPriceDraft) >= closingTrade.entry ? 'bg-emerald-50 text-emerald-800' : 'bg-rose-50 text-rose-800'}`}>
+              Estimated P&amp;L: {money((Number(exitPriceDraft) - closingTrade.entry) * closingTrade.quantity, 2)}
+            </p>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setClosingTrade(null)}>Cancel</Button>
+            <Button
+              disabled={!closingTrade || !Number.isFinite(Number(exitPriceDraft)) || Number(exitPriceDraft) <= 0}
+              onClick={() => closingTrade && void closeTrade(closingTrade, Number(exitPriceDraft), exitReasonDraft)}
+            >
+              Confirm close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       {notice && (
         <output className="fixed bottom-5 right-5 z-[80] flex max-w-sm items-center gap-3 rounded-xl bg-slate-950 px-4 py-3 text-sm text-white shadow-2xl">
           <Check className="size-4 text-emerald-400" />
@@ -926,7 +998,6 @@ export function TradingDashboard() {
 }
 
 function DashboardView({
-  opportunities,
   qualified,
   settings,
   openRisk,
@@ -939,7 +1010,6 @@ function DashboardView({
   marketMeta,
   marketError,
 }: {
-  opportunities: Opportunity[];
   qualified: Opportunity[];
   settings: Settings;
   openRisk: number;
@@ -952,7 +1022,7 @@ function DashboardView({
   marketMeta: MarketMeta | null;
   marketError: string | null;
 }) {
-  const top = opportunities.slice(0, 4);
+  const top = qualified.slice(0, 4);
   const dataHealthy = Boolean(
     marketMeta &&
       !marketMeta.stale &&
@@ -1420,7 +1490,7 @@ function OpportunitiesView({
         <TabsContent value="nifty" className="mt-4">
           <div className="mb-4 flex items-start gap-3 rounded-xl border border-blue-200 bg-blue-50 p-4 text-sm text-blue-950">
             <TrendingUp className="mt-0.5 size-4 shrink-0" />
-            <p>Top 20 positive movers from the current Nifty 500 scan, ranked by the latest available day-change. A connected broker uses its live change; otherwise the latest NSE EOD change is used. Composite score breaks ties.</p>
+            <p>Up to 20 technically bullish Nifty 500 leaders, ranked by score, setup quality, relative strength, volume and the latest positive move. Overextended RSI readings and incomplete technical setups are excluded. A connected broker overlays live prices; the evidence score remains EOD-based.</p>
           </div>
           {cards(niftyBullish20, 'No positive-moving Nifty 500 candidates are available in the latest scan.', { ranked: true, paperTrade: true })}
         </TabsContent>
@@ -1805,6 +1875,9 @@ function JournalView({
                 <div>
                   <p className="font-semibold">{t.symbol}</p>
                   <p className="text-xs text-slate-500">{t.setup}</p>
+                  {t.signalScore !== null && t.signalScore !== undefined && (
+                    <p className="text-xs text-blue-700">Signal {t.signalScore} · {t.signalStatus}</p>
+                  )}
                 </div>
                 <div>
                   <p className="text-xs text-slate-500">Status</p>
@@ -1823,6 +1896,7 @@ function JournalView({
                       ? money((t.exitPrice - t.entry) * t.quantity)
                       : 'Open'}
                   </p>
+                  {t.exitReason && <p className="text-xs text-slate-500">{t.exitReason}</p>}
                 </div>
               </div>
             ))}
@@ -1885,6 +1959,20 @@ function HealthView({
       detail: marketMeta
         ? `${marketMeta.source}; ${marketMeta.stale ? 'the latest snapshot is stale' : 'latest snapshot is within the freshness window'}`
         : 'No source run is available',
+    },
+    {
+      label: 'Pipeline execution',
+      state: marketMeta?.lastPipelineError ? 'Review' : marketMeta ? 'Healthy' : 'Review',
+      detail: marketMeta?.lastPipelineError
+        ? `${marketMeta.lastPipelineError.stage}: ${marketMeta.lastPipelineError.message} (${formatIstDateTime(marketMeta.lastPipelineError.createdAt)})`
+        : 'No recorded pipeline failure requires attention',
+    },
+    {
+      label: 'Supabase database storage',
+      state: marketMeta?.databaseBytes ? 'Healthy' : 'Review',
+      detail: marketMeta?.databaseBytes
+        ? `${(marketMeta.databaseBytes / 1_048_576).toFixed(1)} MB currently used; price history is retained for three years and scan history for 90 days`
+        : 'Database-size telemetry is unavailable',
     },
   ];
   return (

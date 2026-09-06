@@ -11,7 +11,6 @@ import type { Candle, FundamentalSnapshot, Instrument } from './types';
 const STATE_LIMIT = 260;
 const WRITE_BATCH = 400;
 const STATE_WRITE_BATCH = 25;
-const CANDIDATE_WRITE_BATCH = 50;
 
 type StateRow = { symbol: string; candles: Candle[] };
 type FundamentalRow = {
@@ -199,9 +198,8 @@ export async function createScan(
   }
 
   const scanTimestamp = new Date().toISOString();
-  const runResult = await admin
-    .from('market_scan_runs')
-    .upsert({
+  const runResult = await admin.rpc('publish_swing_signal_scan', {
+    p_run: {
       market_date: marketDate,
       provider: 'FREE_EOD',
       status,
@@ -217,25 +215,17 @@ export async function createScan(
       error_message: null,
       started_at: scanTimestamp,
       completed_at: scanTimestamp,
-    }, { onConflict: 'market_date,provider' })
-    .select('id')
-    .single();
-  if (runResult.error) throw new Error(runResult.error.message);
-  const runId = runResult.data.id as string;
-  const deleted = await admin.from('market_scan_candidates').delete().eq('run_id', runId);
-  if (deleted.error) throw new Error(deleted.error.message);
-  await writeBatches(
-    candidates.map((candidate) => ({
-      run_id: runId,
+    },
+    p_candidates: candidates.map((candidate) => ({
       symbol: candidate.symbol,
       sector: candidate.sector,
       status: candidate.status,
       score: candidate.score,
       payload: candidate,
     })),
-    (batch) => admin.from('market_scan_candidates').insert(batch),
-    CANDIDATE_WRITE_BATCH,
-  );
+  });
+  if (runResult.error) throw new Error(runResult.error.message);
+  const runId = runResult.data as string;
   return { runId, marketDate, status, regime, candidates, warnings };
 }
 

@@ -15,6 +15,7 @@ export async function fetchKiteQuotes(symbols: string[], accessToken: string) {
       'X-Kite-Version': '3',
     },
     cache: 'no-store',
+    signal: AbortSignal.timeout(12_000),
   });
   const body = await response.json() as {
     status?: string;
@@ -26,6 +27,7 @@ export async function fetchKiteQuotes(symbols: string[], accessToken: string) {
       ohlc?: { close?: number };
     }>;
   };
+  if (response.status === 401 || response.status === 403) throw new Error('BROKER_AUTH_REJECTED');
   if (!response.ok || body.status !== 'success') throw new Error(body.message || 'Kite quote request failed');
   return Object.entries(body.data ?? {}).map(([key, quote]) => ({
     symbol: key.replace(/^NSE:/, ''),
@@ -37,9 +39,11 @@ export async function fetchKiteQuotes(symbols: string[], accessToken: string) {
 }
 
 export async function fetchGrowwQuotes(symbols: string[], accessToken: string) {
-  const quotes: BrokerQuote[] = [];
+  const batches: string[][] = [];
   for (let index = 0; index < symbols.length; index += 50) {
-    const batch = symbols.slice(index, index + 50);
+    batches.push(symbols.slice(index, index + 50));
+  }
+  const results = await Promise.all(batches.map(async (batch) => {
     const exchangeSymbols = batch.map((symbol) => `NSE_${symbol}`).join(',');
     const response = await fetch(
       `https://api.groww.in/v1/live-data/ltp?segment=CASH&exchange_symbols=${encodeURIComponent(exchangeSymbols)}`,
@@ -50,6 +54,7 @@ export async function fetchGrowwQuotes(symbols: string[], accessToken: string) {
           'X-API-VERSION': '1.0',
         },
         cache: 'no-store',
+        signal: AbortSignal.timeout(12_000),
       },
     );
     const body = await response.json() as {
@@ -57,17 +62,16 @@ export async function fetchGrowwQuotes(symbols: string[], accessToken: string) {
       message?: string;
       payload?: Record<string, number>;
     };
+    if (response.status === 401 || response.status === 403) throw new Error('BROKER_AUTH_REJECTED');
     if (!response.ok || body.status !== 'SUCCESS') throw new Error(body.message || 'Groww quote request failed');
-    const now = new Date().toISOString();
-    for (const [key, value] of Object.entries(body.payload ?? {})) {
-      quotes.push({
+    const updatedAt = new Date().toISOString();
+    return Object.entries(body.payload ?? {}).map(([key, value]) => ({
         symbol: key.replace(/^NSE_/, ''),
         lastPrice: Number(value),
         changePercent: null,
         volume: null,
-        updatedAt: now,
-      });
-    }
-  }
-  return quotes;
+        updatedAt,
+      } satisfies BrokerQuote));
+  }));
+  return results.flat();
 }

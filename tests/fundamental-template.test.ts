@@ -91,3 +91,11 @@ void test('shortlist CSV prefills saved fundamentals and marks missing rows', ()
   assert.match(csv, /Yes,MISSING/);
   assert.match(csv, /2026-08-01,25000,0.2,20,18,12/);
 });
+
+void test('shortlist CSV neutralizes spreadsheet formulas from imported text', () => {
+  const selected = selectFundamentalTemplateCandidates([
+    { ...candidate('SAFE', 75, 2, 'Qualified'), name: '=HYPERLINK("https://bad.example")' },
+  ]);
+  const csv = buildFundamentalTemplateCsv(selected, [], '2026-09-04');
+  assert.match(csv, /'=HYPERLINK/);
+});

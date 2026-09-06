@@ -30,6 +30,7 @@ export async function GET(request: NextRequest) {
       },
       body: new URLSearchParams({ api_key: apiKey, request_token: requestToken, checksum }),
       cache: 'no-store',
+      signal: AbortSignal.timeout(12_000),
     });
     const body = await response.json() as {
       status?: string;

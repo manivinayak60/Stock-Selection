@@ -23,6 +23,7 @@ export async function POST(request: Request) {
         'X-API-VERSION': '1.0',
       },
       cache: 'no-store',
+      signal: AbortSignal.timeout(12_000),
     });
     const result = await validation.json() as {
       status?: string;

@@ -24,12 +24,24 @@ function isCanonicalCsv(row: Record<string, string>) {
   return REQUIRED_COLUMNS.every((column) => column in row);
 }
 
-function optionalNumber(value: string, rowNumber: number, column: string) {
+function optionalNumber(
+  value: string,
+  rowNumber: number,
+  column: string,
+  minimum = -1_000_000,
+  maximum = 1_000_000,
+) {
   const parsed = numeric(value);
-  if (parsed !== null && (!Number.isFinite(parsed) || Math.abs(parsed) > 1_000_000)) {
+  if (parsed !== null && (!Number.isFinite(parsed) || parsed < minimum || parsed > maximum)) {
     throw new Error(`Invalid ${column} on CSV row ${rowNumber}`);
   }
   return parsed;
+}
+
+function validIsoDate(value: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const parsed = new Date(`${value}T00:00:00Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
 }
 
 export function parseFundamentalCsv(text: string, defaults: ImportDefaults = {}) {
@@ -54,8 +66,11 @@ export function parseFundamentalCsv(text: string, defaults: ImportDefaults = {})
     if (!/^[A-Z0-9&.-]{1,20}$/.test(symbol)) {
       throw new Error(`Invalid symbol on CSV row ${rowNumber}`);
     }
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(asOfDate) || Number.isNaN(Date.parse(asOfDate))) {
+    if (!validIsoDate(asOfDate)) {
       throw new Error(`Invalid as_of_date on CSV row ${rowNumber}; use YYYY-MM-DD`);
+    }
+    if (asOfDate > new Date().toISOString().slice(0, 10)) {
+      throw new Error(`Future as_of_date is not allowed on CSV row ${rowNumber}`);
     }
     const snapshotKey = `${symbol}:${asOfDate}`;
     if (seen.has(snapshotKey)) throw new Error(`Duplicate symbol ${symbol} and date ${asOfDate} on CSV row ${rowNumber}`);
@@ -71,13 +86,13 @@ export function parseFundamentalCsv(text: string, defaults: ImportDefaults = {})
       symbol,
       as_of_date: asOfDate,
       market_cap_cr: marketCapCr,
-      debt_equity: optionalNumber(valueFrom(row, ['debt_equity', 'Debt / Eq', 'Debt to Equity']), rowNumber, 'debt_equity'),
-      opm: optionalNumber(valueFrom(row, ['opm', 'OPM %', 'Operating Profit Margin']), rowNumber, 'opm'),
-      roe: optionalNumber(valueFrom(row, ['roe', 'ROE %', 'Return on Equity']), rowNumber, 'roe'),
-      sales_growth: optionalNumber(valueFrom(row, ['sales_growth', 'Sales growth 3Years', 'Sales Growth']), rowNumber, 'sales_growth'),
-      capital_adequacy: optionalNumber(valueFrom(row, ['capital_adequacy', 'Capital Adequacy']), rowNumber, 'capital_adequacy'),
-      gross_npa: optionalNumber(valueFrom(row, ['gross_npa', 'Gross NPA %', 'Gross NPA']), rowNumber, 'gross_npa'),
-      net_npa: optionalNumber(valueFrom(row, ['net_npa', 'Net NPA %', 'Net NPA']), rowNumber, 'net_npa'),
+      debt_equity: optionalNumber(valueFrom(row, ['debt_equity', 'Debt / Eq', 'Debt to Equity']), rowNumber, 'debt_equity', 0, 100),
+      opm: optionalNumber(valueFrom(row, ['opm', 'OPM %', 'Operating Profit Margin']), rowNumber, 'opm', -100, 100),
+      roe: optionalNumber(valueFrom(row, ['roe', 'ROE %', 'Return on Equity']), rowNumber, 'roe', -500, 500),
+      sales_growth: optionalNumber(valueFrom(row, ['sales_growth', 'Sales growth 3Years', 'Sales Growth']), rowNumber, 'sales_growth', -500, 500),
+      capital_adequacy: optionalNumber(valueFrom(row, ['capital_adequacy', 'Capital Adequacy']), rowNumber, 'capital_adequacy', 0, 100),
+      gross_npa: optionalNumber(valueFrom(row, ['gross_npa', 'Gross NPA %', 'Gross NPA']), rowNumber, 'gross_npa', 0, 100),
+      net_npa: optionalNumber(valueFrom(row, ['net_npa', 'Net NPA %', 'Net NPA']), rowNumber, 'net_npa', 0, 100),
       source_name: sourceName.trim(),
       source_url: sourceUrl || null,
       imported_at: new Date().toISOString(),

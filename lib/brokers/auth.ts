@@ -8,6 +8,13 @@ export async function requireUserId() {
   return userId;
 }
 
+export async function requireOwnerUserId() {
+  const userId = await requireUserId();
+  const ownerUserId = process.env.APP_OWNER_USER_ID?.trim();
+  if (ownerUserId && userId !== ownerUserId) throw new Error('OWNER_REQUIRED');
+  return userId;
+}
+
 export function nextSixAmIndia(now = new Date()) {
   const todaySixAmUtc = Date.UTC(
     now.getUTCFullYear(),

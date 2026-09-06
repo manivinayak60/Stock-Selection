@@ -1,4 +1,4 @@
-import type { CandidateSnapshot } from '@/lib/trading';
+import { getBullishLeaders, type CandidateSnapshot } from '@/lib/trading';
 
 export type FundamentalTemplateRow = {
   symbol: string;
@@ -36,10 +36,7 @@ export function selectFundamentalTemplateCandidates(
   candidates
     .filter((candidate) => candidate.score >= 70)
     .forEach((candidate) => add(candidate, 'Score 70+'));
-  [...candidates]
-    .filter((candidate) => candidate.change > 0)
-    .sort((a, b) => b.change - a.change || b.score - a.score)
-    .slice(0, 20)
+  getBullishLeaders(candidates, 20)
     .forEach((candidate) => add(candidate, 'Nifty Bullish 20'));
 
   return [...selected.values()].sort((a, b) => b.score - a.score);
@@ -47,7 +44,10 @@ export function selectFundamentalTemplateCandidates(
 
 const csvCell = (value: string | number | null | undefined) => {
   if (value === null || value === undefined) return '';
-  const text = String(value);
+  const raw = String(value);
+  // Prevent imported text from becoming a spreadsheet formula when opened in
+  // Excel or Google Sheets. Numeric values retain their numeric representation.
+  const text = typeof value === 'string' && /^[=+\-@\t\r]/.test(raw) ? `'${raw}` : raw;
   return /[",\r\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
 };
 

@@ -4,6 +4,17 @@ import { NextResponse, type NextRequest } from 'next/server';
 const publicPaths = ['/login'];
 
 export async function updateSession(request: NextRequest) {
+  // Vercel Cron has no browser session. Let the pipeline route validate its
+  // server-only bearer secret instead of redirecting a legitimate cron run.
+  const cronAuthorization = request.headers.get('authorization');
+  if (
+    request.nextUrl.pathname === '/api/pipeline/run' &&
+    process.env.CRON_SECRET &&
+    cronAuthorization === `Bearer ${process.env.CRON_SECRET}`
+  ) {
+    return NextResponse.next({ request });
+  }
+
   let response = NextResponse.next({ request });
 
   const supabase = createServerClient(

@@ -13,4 +13,7 @@ void test('backtest summary reports forward returns and ten-session win rate', (
   assert.equal(result.averageReturn5, 0.5);
   assert.equal(result.averageReturn10, 1);
   assert.equal(result.averageReturn20, 4.5);
+  assert.equal(result.medianReturn10, 1);
+  assert.equal(result.profitFactor10, 2);
+  assert.equal(result.worstReturn10, -2);
 });

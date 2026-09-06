@@ -15,18 +15,59 @@ type Observation = {
   return20: number;
 };
 
+type PriceRow = {
+  symbol: string;
+  market_date: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+  turnover_lacs?: number;
+};
+
+async function loadAllEquityPrices(admin: ReturnType<typeof createAdminClient>) {
+  const rows: PriceRow[] = [];
+  const pageSize = 1_000;
+  for (let offset = 0; ; offset += pageSize) {
+    const result = await admin
+      .from('eod_prices')
+      .select('symbol,market_date,open,high,low,close,volume,turnover_lacs')
+      .order('symbol', { ascending: true })
+      .order('market_date', { ascending: true })
+      .range(offset, offset + pageSize - 1);
+    if (result.error) throw new Error(result.error.message);
+    const page = (result.data ?? []) as PriceRow[];
+    rows.push(...page);
+    if (page.length < pageSize) return rows;
+  }
+}
+
 export function summarizeObservations(observations: Observation[]) {
   const average = (key: keyof Pick<Observation, 'return5' | 'return10' | 'return20'>) =>
     observations.length
       ? observations.reduce((sum, item) => sum + item[key], 0) / observations.length
       : 0;
   const wins = observations.filter((item) => item.return10 > 0).length;
+  const returns10 = observations.map((item) => item.return10).sort((a, b) => a - b);
+  const middle = Math.floor(returns10.length / 2);
+  const medianReturn10 = !returns10.length
+    ? 0
+    : returns10.length % 2
+      ? returns10[middle]
+      : (returns10[middle - 1] + returns10[middle]) / 2;
+  const grossProfit = returns10.filter((value) => value > 0).reduce((sum, value) => sum + value, 0);
+  const grossLoss = Math.abs(returns10.filter((value) => value < 0).reduce((sum, value) => sum + value, 0));
   return {
     observations: observations.length,
     winRate10: observations.length ? Number(((wins / observations.length) * 100).toFixed(2)) : 0,
     averageReturn5: Number(average('return5').toFixed(2)),
     averageReturn10: Number(average('return10').toFixed(2)),
     averageReturn20: Number(average('return20').toFixed(2)),
+    medianReturn10: Number(medianReturn10.toFixed(2)),
+    profitFactor10: grossLoss ? Number((grossProfit / grossLoss).toFixed(2)) : grossProfit ? null : 0,
+    worstReturn10: returns10.length ? Number(returns10[0].toFixed(2)) : 0,
+    bestReturn10: returns10.length ? Number(returns10.at(-1)!.toFixed(2)) : 0,
   };
 }
 
@@ -36,12 +77,13 @@ function numberOrNull(value: unknown) {
 
 async function main() {
   const admin = createAdminClient();
-  const [instrumentResult, stateResult, fundamentalResult] = await Promise.all([
+  const [instrumentResult, benchmarkResult, fundamentalResult, priceRows] = await Promise.all([
     admin.from('instruments').select('symbol,company_name,industry,series,isin,is_bank,is_nbfc').eq('active', true),
-    admin.from('indicator_states').select('symbol,candles'),
+    admin.from('benchmark_prices').select('symbol,market_date,open,high,low,close,volume').eq('symbol', 'NIFTY500').order('market_date', { ascending: true }).limit(2_000),
     admin.from('fundamentals').select('*').order('as_of_date', { ascending: true }),
+    loadAllEquityPrices(admin),
   ]);
-  const error = instrumentResult.error ?? stateResult.error ?? fundamentalResult.error;
+  const error = instrumentResult.error ?? benchmarkResult.error ?? fundamentalResult.error;
   if (error) throw new Error(error.message);
 
   const instruments = (instrumentResult.data ?? []).map((row): Instrument => ({
@@ -53,9 +95,20 @@ async function main() {
     isBank: Boolean(row.is_bank),
     isNbfc: Boolean(row.is_nbfc),
   }));
-  const states = new Map<string, Candle[]>(
-    (stateResult.data ?? []).map((row) => [String(row.symbol), row.candles as Candle[]]),
-  );
+  const states = new Map<string, Candle[]>();
+  for (const row of priceRows) {
+    const candle: Candle = {
+      date: String(row.market_date), open: Number(row.open), high: Number(row.high),
+      low: Number(row.low), close: Number(row.close), volume: Number(row.volume),
+      turnoverLacs: Number(row.turnover_lacs ?? 0),
+    };
+    states.set(row.symbol, [...(states.get(row.symbol) ?? []), candle]);
+  }
+  states.set('NIFTY500', ((benchmarkResult.data ?? []) as PriceRow[]).map((row) => ({
+    date: String(row.market_date), open: Number(row.open), high: Number(row.high),
+    low: Number(row.low), close: Number(row.close), volume: Number(row.volume),
+    turnoverLacs: 0,
+  })));
   const fundamentals = new Map<string, FundamentalSnapshot[]>();
   for (const row of fundamentalResult.data ?? []) {
     const snapshot: FundamentalSnapshot = {
@@ -111,9 +164,16 @@ async function main() {
 
   const report = {
     generatedAt: new Date().toISOString(),
-    methodology: 'Point-in-time fundamentals; EOD signal close to subsequent 5/10/20-session close; overlapping observations included.',
+    methodology: 'Point-in-time fundamentals; all retained EOD rows; EOD signal close to subsequent 5/10/20-session close; overlapping observations included.',
     score70Plus: summarizeObservations(observations.filter((item) => item.score >= 70)),
     score80Plus: summarizeObservations(observations.filter((item) => item.score >= 80)),
+    score70To79: summarizeObservations(observations.filter((item) => item.score >= 70 && item.score < 80)),
+    limitations: [
+      'Coverage is limited by the EOD history actually retained in Supabase; run the configurable backfill for multi-year evidence.',
+      'Observations overlap and do not represent a simultaneously executable portfolio.',
+      'Brokerage, taxes, slippage, opening gaps, stop execution and survivorship bias are not yet modelled.',
+      'Results are calibration evidence, not a forecast or guarantee.',
+    ],
   };
   console.log(JSON.stringify(report, null, 2));
   if (!observations.length) {

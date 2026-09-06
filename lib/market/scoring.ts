@@ -57,6 +57,9 @@ function fundamentalScore(
       reason: valid ? null : 'Bank ROE, growth, capital adequacy, or NPA gate failed',
     };
   }
+  if (ageInDays(fundamental.asOfDate, marketDate) < 0) {
+    return { score: 0, valid: false, reason: 'Fundamental snapshot is dated after the market session' };
+  }
 
   if (instrument.isNbfc) {
     const debtEquity = fundamental.debtEquity ?? Number.POSITIVE_INFINITY;

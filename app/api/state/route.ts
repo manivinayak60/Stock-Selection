@@ -63,7 +63,7 @@ export async function GET() {
       .order('created_at', { ascending: false }),
     supabase
       .from('paper_trades')
-      .select('id, symbol, sector, setup, status, entry, stop, target, quantity, opened_at, closed_at, exit_price, notes')
+      .select('id, symbol, sector, setup, status, entry, stop, target, quantity, opened_at, closed_at, exit_price, notes, signal_score, signal_status, signal_market_date, evidence_status, exit_reason')
       .eq('user_id', userId)
       .order('opened_at', { ascending: false }),
     supabase
@@ -98,6 +98,11 @@ export async function GET() {
       closedAt: row.closed_at,
       exitPrice: row.exit_price,
       notes: row.notes,
+      signalScore: row.signal_score,
+      signalStatus: row.signal_status,
+      signalMarketDate: row.signal_market_date,
+      evidenceStatus: row.evidence_status,
+      exitReason: row.exit_reason,
     })),
     runs: (runsResult.data ?? []).map((row) => ({
       id: row.id,
@@ -205,18 +210,27 @@ export async function POST(request: Request) {
         { status: businessError ? 409 : 500 },
       );
     }
-    return NextResponse.json({ ok: true, id: Number(result.data) });
+    const tradeId = Number(result.data);
+    const signalScore = Number(body.signalScore);
+    await supabase.from('paper_trades').update({
+      signal_score: Number.isFinite(signalScore) ? signalScore : null,
+      signal_status: typeof body.signalStatus === 'string' ? body.signalStatus : null,
+      signal_market_date: typeof body.signalMarketDate === 'string' ? body.signalMarketDate : null,
+      evidence_status: typeof body.evidenceStatus === 'string' ? body.evidenceStatus : null,
+    }).eq('id', tradeId).eq('user_id', userId);
+    return NextResponse.json({ ok: true, id: tradeId });
   }
 
   if (action === 'closeTrade') {
     const id = Number(body.id);
     const exitPrice = Number(body.exitPrice);
+    const exitReason = typeof body.exitReason === 'string' ? body.exitReason.trim().slice(0, 100) : '';
     if (!Number.isInteger(id) || exitPrice <= 0) {
       return NextResponse.json({ error: 'Invalid exit details' }, { status: 400 });
     }
     const { error } = await supabase
       .from('paper_trades')
-      .update({ status: 'CLOSED', exit_price: exitPrice, closed_at: now })
+      .update({ status: 'CLOSED', exit_price: exitPrice, exit_reason: exitReason || null, closed_at: now })
       .eq('id', id)
       .eq('user_id', userId)
       .eq('status', 'OPEN');
