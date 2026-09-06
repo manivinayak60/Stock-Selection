@@ -2008,6 +2008,7 @@ function SettingsView({
   const [fundamentalFile, setFundamentalFile] = useState<File | null>(null);
   const [fundamentalBusy, setFundamentalBusy] = useState(false);
   const [fundamentalError, setFundamentalError] = useState<string | null>(null);
+  const [fundamentalHelpOpen, setFundamentalHelpOpen] = useState(false);
   const [browserAlerts, setBrowserAlerts] = useState(false);
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -2207,6 +2208,14 @@ function SettingsView({
             <div className="flex items-center gap-2">
               <Database className="size-4 text-blue-700" />
               <h2 className="font-semibold">Fundamental quality data</h2>
+              <button
+                type="button"
+                onClick={() => setFundamentalHelpOpen(true)}
+                aria-label="How to prepare and import the fundamentals CSV"
+                className="grid size-8 place-items-center rounded-lg border border-blue-200 bg-blue-50 text-blue-700 transition hover:bg-blue-100"
+              >
+                <Info className="size-4" />
+              </button>
             </div>
             <p className="mt-2 max-w-3xl text-sm leading-relaxed text-slate-600">
               Import source-dated market cap, debt/equity, OPM, ROE and sales growth. Banks may also include capital adequacy and NPA values. Scores are rebuilt immediately after a valid import.
@@ -2349,6 +2358,94 @@ function SettingsView({
               {brokerBusy ? <LoaderCircle className="animate-spin" /> : <Radio />}
               {brokerBusy ? 'Checking token…' : 'Connect securely'}
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={fundamentalHelpOpen} onOpenChange={setFundamentalHelpOpen}>
+        <DialogContent className="max-h-[92vh] overflow-y-auto sm:max-w-3xl">
+          <DialogHeader>
+            <DialogTitle>How to prepare and import fundamentals</DialogTitle>
+            <DialogDescription>
+              Follow these steps after every new quarterly result cycle. Daily price syncs do not require a new fundamentals file.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-5 text-sm leading-relaxed text-slate-700">
+            <section className="rounded-2xl border border-blue-200 bg-blue-50/70 p-4">
+              <h3 className="font-semibold text-blue-950">1. Download the correct stock list</h3>
+              <p className="mt-1 text-blue-900/85">
+                Run <strong>Sync latest NSE EOD</strong> first, then click <strong>Download shortlisted CSV</strong>. The file combines Qualified, Score 70+ and Nifty Bullish 20 stocks without duplicate symbols.
+              </p>
+            </section>
+
+            <section>
+              <h3 className="font-semibold text-slate-950">2. Open the CSV and identify missing rows</h3>
+              <p className="mt-1">
+                Open it in Excel or Google Sheets. Keep the header row unchanged. Filter <code>needs_fundamental_update</code> to <strong>Yes</strong>; those are the rows that need research. Columns such as selection group, company, sector, score, price and daily change are information only and are already filled by SwingSignal.
+              </p>
+            </section>
+
+            <section className="grid gap-3 md:grid-cols-2">
+              <div className="rounded-2xl border border-emerald-200 bg-emerald-50/70 p-4">
+                <h3 className="font-semibold text-emerald-950">3A. Normal company or NBFC</h3>
+                <ul className="mt-2 list-disc space-y-1 pl-5 text-emerald-950/85">
+                  <li><code>market_cap_cr</code> — market value in ₹ crore</li>
+                  <li><code>debt_equity</code> — debt divided by equity</li>
+                  <li><code>opm</code> — operating profit margin percentage</li>
+                  <li><code>roe</code> — return on equity percentage</li>
+                  <li><code>sales_growth</code> — preferably three-year growth percentage</li>
+                </ul>
+                <p className="mt-2 text-xs text-emerald-900">For NBFCs, debt/equity is evaluated with a separate financial-company threshold.</p>
+              </div>
+              <div className="rounded-2xl border border-violet-200 bg-violet-50/70 p-4">
+                <h3 className="font-semibold text-violet-950">3B. Bank</h3>
+                <ul className="mt-2 list-disc space-y-1 pl-5 text-violet-950/85">
+                  <li><code>market_cap_cr</code> — market value in ₹ crore</li>
+                  <li><code>roe</code> — return on equity percentage</li>
+                  <li><code>sales_growth</code> — latest comparable growth percentage</li>
+                  <li><code>capital_adequacy</code> — capital adequacy ratio</li>
+                  <li><code>gross_npa</code> and <code>net_npa</code> — NPA percentages</li>
+                </ul>
+                <p className="mt-2 text-xs text-violet-900">Leave debt/equity and OPM blank for banks; the bank quality model does not use them.</p>
+              </div>
+            </section>
+
+            <section>
+              <h3 className="font-semibold text-slate-950">4. Add date and source evidence</h3>
+              <div className="mt-2 overflow-hidden rounded-xl border border-slate-200">
+                <div className="grid gap-1 border-b border-slate-200 bg-slate-50 p-3 sm:grid-cols-[150px_1fr]"><code>as_of_date</code><span>When you verified the figures, written as YYYY-MM-DD, for example 2026-09-06.</span></div>
+                <div className="grid gap-1 border-b border-slate-200 p-3 sm:grid-cols-[150px_1fr]"><code>source_name</code><span>The source, such as Moneycontrol, NSE filing, annual report or Screener.in.</span></div>
+                <div className="grid gap-1 bg-slate-50 p-3 sm:grid-cols-[150px_1fr]"><code>source_url</code><span>The exact HTTPS page used for that stock. This is strongly recommended for later checking.</span></div>
+              </div>
+            </section>
+
+            <section className="rounded-2xl border border-amber-200 bg-amber-50 p-4">
+              <h3 className="font-semibold text-amber-950">5. Use the correct number format</h3>
+              <ul className="mt-2 list-disc space-y-1 pl-5 text-amber-950/85">
+                <li>Enter percentages as plain numbers: use <strong>21.5</strong>, not <strong>21.5%</strong> and not <strong>0.215</strong>.</li>
+                <li>Use market capitalisation in ₹ crore, not raw rupees or ₹ lakh.</li>
+                <li>Do not add currency symbols, commas inside numbers, formulas or duplicate symbol/date rows.</li>
+                <li>Do not guess missing values. Leave an optional cell blank until it can be verified.</li>
+              </ul>
+            </section>
+
+            <section>
+              <h3 className="font-semibold text-slate-950">6. Save and import</h3>
+              <ol className="mt-2 list-decimal space-y-1 pl-5">
+                <li>Save or download the sheet as a UTF-8 CSV file smaller than 2 MB.</li>
+                <li>Return here and click <strong>Choose CSV</strong>.</li>
+                <li>Click <strong>Import and rebuild scores</strong>.</li>
+                <li>Wait for the EOD scoring rebuild to finish, then review Qualified and the other opportunity tabs.</li>
+              </ol>
+            </section>
+
+            <div className="rounded-xl bg-slate-950 p-4 font-mono text-xs leading-relaxed text-slate-200">
+              Example company row: INFY · 2026-09-06 · market cap 650000 · D/E 0.10 · OPM 21.5 · ROE 29.4 · sales growth 8.2
+            </div>
+          </div>
+          <DialogFooter>
+            <a href="/api/fundamentals/template" download className={buttonVariants({ variant: 'outline' })}><Download /> Download shortlisted CSV</a>
+            <Button onClick={() => setFundamentalHelpOpen(false)}>Understood</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
