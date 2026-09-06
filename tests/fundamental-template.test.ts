@@ -18,6 +18,7 @@ const candidate = (
   sector: 'Industrials',
   isBank: false,
   isNbfc: false,
+  isNifty50: true,
   close: 100,
   change,
   marketCapCr: null,
@@ -63,8 +64,21 @@ void test('shortlist template combines groups without duplicate symbols', () => 
   assert.deepEqual(selected.map((row) => row.symbol), ['FALLER', 'BOTH', 'MOVER']);
   assert.deepEqual(
     selected.find((row) => row.symbol === 'BOTH')?.selectionGroups,
-    ['Qualified', 'Score 70+', 'Nifty Bullish 20'],
+    ['Qualified', 'Score 70+', 'Nifty 50 Top 20'],
   );
+});
+
+void test('Nifty 50 shortlist always takes 20 members and ranks bullish rows first', () => {
+  const candidates = Array.from({ length: 22 }, (_, index) => ({
+    ...candidate(`NIFTY${index + 1}`, 80 - index, index < 5 ? 2 : -1),
+    isNifty50: true,
+  }));
+  const selected = selectFundamentalTemplateCandidates(candidates);
+  const niftyRows = selected.filter((row) => row.selectionGroups.includes('Nifty 50 Top 20'));
+  assert.equal(niftyRows.length, 20);
+  assert.deepEqual(niftyRows.slice(0, 5).map((row) => row.symbol), [
+    'NIFTY1', 'NIFTY2', 'NIFTY3', 'NIFTY4', 'NIFTY5',
+  ]);
 });
 
 void test('shortlist CSV prefills saved fundamentals and marks missing rows', () => {

@@ -94,6 +94,9 @@ async function main() {
     isin: String(row.isin),
     isBank: Boolean(row.is_bank),
     isNbfc: Boolean(row.is_nbfc),
+    // Historical scan payloads created before Nifty 50 membership tracking do
+    // not carry this display-only flag. It does not affect backtest scoring.
+    isNifty50: false,
   }));
   const states = new Map<string, Candle[]>();
   for (const row of priceRows) {

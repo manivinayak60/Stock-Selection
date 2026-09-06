@@ -49,9 +49,18 @@ async function fetchText(url: string, timeoutMs = 20_000) {
 }
 
 export async function fetchNifty500Universe(): Promise<Instrument[]> {
-  const text = await fetchText(
-    `${NSE_ARCHIVE}/content/indices/ind_nifty500list.csv`,
+  const [text, nifty50Text] = await Promise.all([
+    fetchText(`${NSE_ARCHIVE}/content/indices/ind_nifty500list.csv`),
+    fetchText(`${NSE_ARCHIVE}/content/indices/ind_nifty50list.csv`),
+  ]);
+  const nifty50Symbols = new Set(
+    parseCsv(nifty50Text)
+      .map((row) => row.Symbol?.trim().toUpperCase())
+      .filter((symbol): symbol is string => Boolean(symbol)),
   );
+  if (nifty50Symbols.size < 45 || nifty50Symbols.size > 55) {
+    throw new Error(`Unexpected Nifty 50 universe size: ${nifty50Symbols.size}`);
+  }
   const rows = parseCsv(text);
   const instruments = rows.flatMap((row) => {
     const symbol = row.Symbol?.toUpperCase();
@@ -71,6 +80,7 @@ export async function fetchNifty500Universe(): Promise<Instrument[]> {
       isin,
       isBank,
       isNbfc: !isBank && financeName && !excludedFinance,
+      isNifty50: nifty50Symbols.has(symbol),
     }];
   });
   if (instruments.length < 450 || instruments.length > 550) {

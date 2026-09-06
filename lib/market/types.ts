@@ -18,6 +18,7 @@ export type Instrument = {
   isin: string;
   isBank: boolean;
   isNbfc: boolean;
+  isNifty50: boolean;
 };
 
 export type FundamentalSnapshot = {

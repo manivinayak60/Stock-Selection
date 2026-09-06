@@ -1,4 +1,4 @@
-import { getBullishLeaders, type CandidateSnapshot } from '@/lib/trading';
+import { getNifty50Top20, type CandidateSnapshot } from '@/lib/trading';
 
 export type FundamentalTemplateRow = {
   symbol: string;
@@ -36,8 +36,8 @@ export function selectFundamentalTemplateCandidates(
   candidates
     .filter((candidate) => candidate.score >= 70)
     .forEach((candidate) => add(candidate, 'Score 70+'));
-  getBullishLeaders(candidates, 20)
-    .forEach((candidate) => add(candidate, 'Nifty Bullish 20'));
+  getNifty50Top20(candidates)
+    .forEach((candidate) => add(candidate, 'Nifty 50 Top 20'));
 
   return [...selected.values()].sort((a, b) => b.score - a.score);
 }

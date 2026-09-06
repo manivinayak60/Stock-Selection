@@ -17,6 +17,7 @@ export type CandidateSnapshot = {
   sector: string;
   isBank: boolean;
   isNbfc: boolean;
+  isNifty50?: boolean;
   close: number;
   change: number;
   marketCapCr: number | null;
@@ -189,15 +190,27 @@ export function bullishLeaderScore(candidate: CandidateSnapshot) {
     Math.min(candidate.relativeVolume20, 2.5) * 2;
 }
 
+export function isBullishCandidate(stock: CandidateSnapshot) {
+  const move = stock.liveChangePercent ?? stock.change;
+  return move > 0 && stock.rsi14 <= 72 && stock.trend >= 15 &&
+    stock.momentum >= 6 && stock.setup !== 'Watch for breakout';
+}
+
 export function getBullishLeaders<T extends CandidateSnapshot>(stocks: T[], limit = 20) {
   return [...stocks]
-    .filter((stock) => {
-      const move = stock.liveChangePercent ?? stock.change;
-      return move > 0 && stock.rsi14 <= 72 && stock.trend >= 15 &&
-        stock.momentum >= 6 && stock.setup !== 'Watch for breakout';
-    })
+    .filter(isBullishCandidate)
     .sort((a, b) => bullishLeaderScore(b) - bullishLeaderScore(a) || b.score - a.score)
     .slice(0, limit);
+}
+
+export function getNifty50Top20<T extends CandidateSnapshot>(stocks: T[]) {
+  return [...stocks]
+    .filter((stock) => stock.isNifty50)
+    .sort((a, b) => {
+      const bullishDifference = Number(isBullishCandidate(b)) - Number(isBullishCandidate(a));
+      return bullishDifference || bullishLeaderScore(b) - bullishLeaderScore(a) || b.score - a.score;
+    })
+    .slice(0, 20);
 }
 
 export const performanceSeries: {

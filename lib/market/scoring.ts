@@ -166,6 +166,7 @@ export function scoreCandidate(
     sector: instrument.industry,
     isBank: instrument.isBank,
     isNbfc: instrument.isNbfc,
+    isNifty50: instrument.isNifty50,
     close: technical.close,
     change: technical.change,
     marketCapCr: fundamental?.marketCapCr ?? null,

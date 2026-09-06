@@ -12,6 +12,7 @@ const instrument: Instrument = {
   isin: 'INE000000000',
   isBank: false,
   isNbfc: false,
+  isNifty50: true,
 };
 const technical: TechnicalSnapshot = {
   asOfDate: '2026-09-03', close: 120, change: 2, sma20: 112, sma50: 105,

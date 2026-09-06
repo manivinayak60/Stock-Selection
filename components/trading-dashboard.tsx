@@ -55,7 +55,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { SignOutButton } from '@/components/sign-out-button';
 import {
   buildOpportunities,
-  getBullishLeaders,
+  getNifty50Top20,
+  isBullishCandidate,
   defaultSettings,
   type CandidateSnapshot,
   type BrokerConnectionStatus,
@@ -142,7 +143,7 @@ const formatIstDateTime = (date: string | null | undefined) =>
 const currentMove = (stock: Opportunity) =>
   stock.liveChangePercent ?? stock.change;
 
-const getNiftyBullish20 = (stocks: Opportunity[]) => getBullishLeaders(stocks, 20);
+const getNiftyBullish20 = (stocks: Opportunity[]) => getNifty50Top20(stocks);
 
 async function postState(
   payload: Record<string, unknown>,
@@ -1323,7 +1324,7 @@ function OpportunitiesView({
   const cards = (
     stocks: Opportunity[],
     emptyText: string,
-    options?: { ranked?: boolean; paperTrade?: boolean },
+    options?: { ranked?: boolean; paperTrade?: boolean; colorByBullish?: boolean },
   ) => {
     const visible = stocks.filter(matches);
     if (!visible.length) {
@@ -1337,9 +1338,11 @@ function OpportunitiesView({
     }
     return (
     <div className="grid gap-4 xl:grid-cols-2">
-      {visible.map((stock, index) => (
-        <article key={stock.symbol} className="group relative overflow-hidden rounded-2xl border border-slate-200/90 bg-white p-5 shadow-[0_8px_30px_rgba(15,23,42,.055)] transition duration-200 hover:-translate-y-0.5 hover:border-emerald-300 hover:shadow-[0_20px_50px_rgba(15,23,42,.11)]">
-          <div className={`absolute inset-x-0 top-0 h-1 ${stock.score >= 70 ? 'bg-emerald-500' : stock.score >= 50 ? 'bg-amber-400' : 'bg-slate-300'}`} />
+      {visible.map((stock, index) => {
+        const bullish = isBullishCandidate(stock);
+        return (
+        <article key={stock.symbol} className={`group relative overflow-hidden rounded-2xl border p-5 shadow-[0_8px_30px_rgba(15,23,42,.055)] transition duration-200 hover:-translate-y-0.5 hover:shadow-[0_20px_50px_rgba(15,23,42,.11)] ${options?.colorByBullish ? bullish ? 'border-emerald-200 bg-emerald-50/40 hover:border-emerald-400' : 'border-rose-200 bg-rose-50/40 hover:border-rose-400' : 'border-slate-200/90 bg-white hover:border-emerald-300'}`}>
+          <div className={`absolute inset-x-0 top-0 h-1 ${options?.colorByBullish ? bullish ? 'bg-emerald-500' : 'bg-rose-500' : stock.score >= 70 ? 'bg-emerald-500' : stock.score >= 50 ? 'bg-amber-400' : 'bg-slate-300'}`} />
           <div className="flex items-start justify-between gap-3">
             <div>
               <div className="flex items-center gap-2">
@@ -1350,6 +1353,11 @@ function OpportunitiesView({
                 )}
                 <h3 className="text-lg font-semibold">{stock.symbol}</h3>
                 <StatusPill status={stock.status} />
+                {options?.colorByBullish && (
+                  <span className={`rounded-full px-2 py-1 text-xs font-semibold ${bullish ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'}`}>
+                    {bullish ? 'Bullish' : 'Not bullish'}
+                  </span>
+                )}
               </div>
               <p className="text-sm text-slate-500">
                 {stock.name} · {stock.sector}
@@ -1441,7 +1449,8 @@ function OpportunitiesView({
             )}
           </div>
         </article>
-      ))}
+        );
+      })}
     </div>
     );
   };
@@ -1457,7 +1466,7 @@ function OpportunitiesView({
             <div className="flex items-center gap-2 text-sm font-semibold text-blue-800"><TrendingUp className="size-4" /> Latest ranked market</div>
             <h1 className="mt-2 page-title">Daily opportunities</h1>
             <p className="page-subtitle">
-              Compare validated setups, high-score ideas and the latest Nifty 500 bullish leaders in one place.
+              Compare validated setups, high-score ideas and the strongest current members of the Nifty 50 in one place.
             </p>
           </div>
           <label className="relative block">
@@ -1475,7 +1484,7 @@ function OpportunitiesView({
         <TabsList className="h-auto flex-wrap border border-slate-200 bg-white p-1.5 shadow-sm" variant="default">
           <TabsTrigger value="qualified">Qualified ({qualifiedStocks.length})</TabsTrigger>
           <TabsTrigger value="top">Top score 70+ ({topScoreStocks.length})</TabsTrigger>
-          <TabsTrigger value="nifty">Nifty bullish 20 ({niftyBullish20.length})</TabsTrigger>
+          <TabsTrigger value="nifty">Nifty 50 top 20 ({niftyBullish20.length})</TabsTrigger>
           <TabsTrigger value="next">Next 50–69 ({nextScoreStocks.length})</TabsTrigger>
           <TabsTrigger value="companies">Companies</TabsTrigger>
           <TabsTrigger value="banks">Banks & financials</TabsTrigger>
@@ -1490,9 +1499,9 @@ function OpportunitiesView({
         <TabsContent value="nifty" className="mt-4">
           <div className="mb-4 flex items-start gap-3 rounded-xl border border-blue-200 bg-blue-50 p-4 text-sm text-blue-950">
             <TrendingUp className="mt-0.5 size-4 shrink-0" />
-            <p>Up to 20 technically bullish Nifty 500 leaders, ranked by score, setup quality, relative strength, volume and the latest positive move. Overextended RSI readings and incomplete technical setups are excluded. A connected broker overlays live prices; the evidence score remains EOD-based.</p>
+            <p>The top 20 are selected only from the official Nifty 50 constituents and ranked daily. Green cards currently pass the bullish trend, momentum, RSI, setup and positive-move rules. If only five pass, those five are green and the next 15 ranked members are red. A connected broker overlays live prices; the evidence score remains EOD-based.</p>
           </div>
-          {cards(niftyBullish20, 'No positive-moving Nifty 500 candidates are available in the latest scan.', { ranked: true, paperTrade: true })}
+          {cards(niftyBullish20, 'Run a new NSE EOD sync to load official Nifty 50 membership.', { ranked: true, paperTrade: true, colorByBullish: true })}
         </TabsContent>
         <TabsContent value="next" className="mt-4">
           {cards(nextScoreStocks, 'No developing setup currently has a score between 50 and 69.')}
@@ -2462,7 +2471,7 @@ function SettingsView({
             <section className="rounded-2xl border border-blue-200 bg-blue-50/70 p-4">
               <h3 className="font-semibold text-blue-950">1. Download the correct stock list</h3>
               <p className="mt-1 text-blue-900/85">
-                Run <strong>Sync latest NSE EOD</strong> first, then click <strong>Download shortlisted CSV</strong>. The file combines Qualified, Score 70+ and Nifty Bullish 20 stocks without duplicate symbols.
+                Run <strong>Sync latest NSE EOD</strong> first, then click <strong>Download shortlisted CSV</strong>. The file combines Qualified, Score 70+ and Nifty 50 Top 20 stocks without duplicate symbols.
               </p>
             </section>
 
@@ -2494,8 +2503,18 @@ function SettingsView({
                   <li><code>capital_adequacy</code> — capital adequacy ratio</li>
                   <li><code>gross_npa</code> and <code>net_npa</code> — NPA percentages</li>
                 </ul>
-                <p className="mt-2 text-xs text-violet-900">Leave debt/equity and OPM blank for banks; the bank quality model does not use them.</p>
+                <p className="mt-2 text-xs text-violet-900">Leave debt/equity and OPM blank for banks; the bank quality model does not use them. These three banking ratios are not needed for ordinary companies or NBFCs.</p>
               </div>
+            </section>
+
+            <section className="rounded-2xl border border-cyan-200 bg-cyan-50/70 p-4">
+              <h3 className="font-semibold text-cyan-950">Where to find bank CRAR and NPA values</h3>
+              <p className="mt-1 text-cyan-950/85">
+                Open the bank&apos;s latest quarterly investor presentation, financial-results PDF or annual report from its investor-relations page or NSE corporate filings. Search the PDF for <strong>CRAR</strong> or <strong>capital adequacy</strong>, <strong>GNPA</strong>, and <strong>NNPA</strong>. Enter the reported percentages and use the result date as <code>as_of_date</code>.
+              </p>
+              <p className="mt-2 text-xs text-cyan-900">
+                Gross NPA % can only be calculated when gross NPA amount and gross advances are both reported; Net NPA % similarly needs net NPA and net advances. CRAR needs regulatory capital and risk-weighted assets. Do not estimate any of them from market price, debt/equity, OPM or ROE. If unavailable, leave them blank—the bank stays Watch-only instead of using invented evidence.
+              </p>
             </section>
 
             <section>
