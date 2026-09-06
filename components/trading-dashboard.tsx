@@ -14,6 +14,7 @@ import {
   CircleDollarSign,
   Clock3,
   Database,
+  Download,
   ExternalLink,
   Gauge,
   HeartPulse,
@@ -2234,7 +2235,7 @@ function SettingsView({
               </a>
             </div>
             <p className="mt-2 text-xs text-slate-500">
-              Export CSV from this screen, then upload it below. SwingSignal now recognises Screener columns such as NSE Code, Mar Cap Rs.Cr., Debt / Eq, OPM %, ROE % and Sales growth 3Years.
+              Export CSV from this screen, then upload it below. Screener screen export requires Premium; the saved URL does not download data automatically.
             </p>
             <div className="mt-3 flex flex-wrap items-center gap-3">
               <label className="cursor-pointer rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium hover:bg-slate-50">
@@ -2252,10 +2253,16 @@ function SettingsView({
               <span className="text-sm text-slate-500">
                 {fundamentalFile?.name ?? 'No file selected'}
               </span>
-              <a href="/fundamentals-template.csv" download className="text-sm font-semibold text-blue-700 hover:underline">
-                Download template
+              <a href="/api/fundamentals/template" download className="inline-flex items-center gap-1.5 rounded-lg bg-blue-50 px-3 py-2 text-sm font-semibold text-blue-800 hover:bg-blue-100">
+                <Download className="size-4" /> Download shortlisted CSV
+              </a>
+              <a href="/fundamentals-template.csv" download className="text-sm font-semibold text-slate-600 hover:underline">
+                Blank template
               </a>
             </div>
+            <p className="mt-3 rounded-xl border border-blue-100 bg-blue-50/70 p-3 text-xs leading-relaxed text-blue-950">
+              The shortlisted CSV contains the union of Qualified, Score 70+ and Nifty Bullish 20 stocks. Prices, scores, sector and every saved fundamental value are prefilled. Rows marked <strong>needs_fundamental_update = Yes</strong> still need as-of date, market cap, quality ratios and source details before import.
+            </p>
             {fundamentalError && <p className="mt-3 text-sm text-rose-700">{fundamentalError}</p>}
           </div>
           <Button
