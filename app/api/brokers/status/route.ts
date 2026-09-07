@@ -24,7 +24,10 @@ export async function GET() {
     return NextResponse.json({
       connections: definitions.map((definition) => {
         const row = rows.find((item) => item.provider === definition.provider);
-        const expired = Boolean(row?.token_expires_at && Date.parse(row.token_expires_at) <= now);
+        const expired = Boolean(
+          row?.status === 'EXPIRED' ||
+          (row?.token_expires_at && Date.parse(row.token_expires_at) <= now),
+        );
         return {
           provider: definition.provider,
           configured: definition.configured,

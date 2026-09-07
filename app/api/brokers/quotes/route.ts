@@ -25,8 +25,14 @@ async function respond(provider: LiveProvider | null, symbols: string[]) {
       return NextResponse.json({ error: 'Provider and symbols are required' }, { status: 400 });
     }
     const connection = await getBrokerConnection(userId, provider);
-    if (!connection || connection.status !== 'CONNECTED') {
-      return NextResponse.json({ error: 'Broker is not connected', fallback: 'FREE_EOD' }, { status: 409 });
+    if (!connection) {
+      return NextResponse.json({ error: 'No saved broker connection exists for this signed-in user; reconnect in Settings', fallback: 'FREE_EOD' }, { status: 409 });
+    }
+    if (connection.status === 'EXPIRED') {
+      return NextResponse.json({ error: 'Broker session expired; generate today\'s token and reconnect in Settings', fallback: 'FREE_EOD' }, { status: 409 });
+    }
+    if (connection.status !== 'CONNECTED') {
+      return NextResponse.json({ error: 'The saved broker connection is in an error state; reconnect in Settings', fallback: 'FREE_EOD' }, { status: 409 });
     }
     if (connection.expiresAt && Date.parse(connection.expiresAt) <= Date.now()) {
       await markBrokerConnectionStatus(userId, provider, 'EXPIRED');

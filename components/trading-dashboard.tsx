@@ -710,6 +710,22 @@ export function TradingDashboard() {
     notify('Groww connected. Save settings to activate live prices.');
   }, [loadBrokerStatus, notify]);
 
+  const testLiveBroker = useCallback(async (provider: 'KITE_CONNECT' | 'GROWW_CONNECT') => {
+    const response = await fetch('/api/brokers/test', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ provider }),
+    });
+    const data = await response.json() as {
+      error?: string;
+      quote?: { symbol: string; lastPrice: number; updatedAt: string };
+    };
+    await loadBrokerStatus();
+    if (!response.ok || !data.quote) throw new Error(data.error || 'Live connection test failed');
+    setLiveRefreshKey((value) => value + 1);
+    notify(`${provider === 'GROWW_CONNECT' ? 'Groww' : 'Zerodha'} verified: ${data.quote.symbol} ${money(data.quote.lastPrice, 2)}`);
+  }, [loadBrokerStatus, notify]);
+
   const disconnectLiveBroker = useCallback(async (
     provider: 'KITE_CONNECT' | 'GROWW_CONNECT',
   ) => {
@@ -1020,6 +1036,7 @@ export function TradingDashboard() {
               onRunScan={runScan}
               brokerConnections={brokerConnections}
               onConnectGroww={connectGroww}
+              onTestBroker={testLiveBroker}
               onDisconnectBroker={disconnectLiveBroker}
               onImportFundamentals={importFundamentals}
             />
@@ -2192,6 +2209,7 @@ function SettingsView({
   onRunScan,
   brokerConnections,
   onConnectGroww,
+  onTestBroker,
   onDisconnectBroker,
   onImportFundamentals,
 }: {
@@ -2204,6 +2222,7 @@ function SettingsView({
   onRunScan: () => void;
   brokerConnections: BrokerConnectionStatus[];
   onConnectGroww: (accessToken: string) => Promise<void>;
+  onTestBroker: (provider: 'KITE_CONNECT' | 'GROWW_CONNECT') => Promise<void>;
   onDisconnectBroker: (provider: 'KITE_CONNECT' | 'GROWW_CONNECT') => Promise<void>;
   onImportFundamentals: (file: File, sourceUrl: string) => Promise<void>;
 }) {
@@ -2343,12 +2362,19 @@ function SettingsView({
               />
               <ProviderCard
                 title="Zerodha Kite Connect"
-                description="Live price confirmation for the top 50 EOD-ranked stocks. Requires the ₹500 data plan and daily login."
+                description={`Live price confirmation for the ranked stocks. Requires the data plan and daily login.${kite?.lastVerifiedAt ? ` Saved row last verified ${formatIstDateTime(kite.lastVerifiedAt)}.` : ''}`}
                 selected={value.provider === 'KITE_CONNECT'}
                 status={!kite?.configured ? 'Setup required' : kite.connected ? 'Connected' : kite?.expired ? 'Session expired' : 'Not connected'}
                 onSelect={kite?.connected ? () => onChange({ ...value, provider: 'KITE_CONNECT' }) : undefined}
                 action={kite?.connected ? (
-                  <Button variant="outline" size="sm" onClick={() => void onDisconnectBroker('KITE_CONNECT')}>Disconnect</Button>
+                  <div className="flex flex-wrap gap-2">
+                    <Button size="sm" disabled={brokerBusy} onClick={async () => {
+                      setBrokerBusy(true); setBrokerError(null);
+                      try { await onTestBroker('KITE_CONNECT'); } catch (error) { setBrokerError(error instanceof Error ? error.message : 'Zerodha test failed'); }
+                      finally { setBrokerBusy(false); }
+                    }}><Radio /> Test live connection</Button>
+                    <Button variant="outline" size="sm" onClick={() => void onDisconnectBroker('KITE_CONNECT')}>Disconnect</Button>
+                  </div>
                 ) : (
                   <div className="flex flex-wrap gap-2">
                     <Button variant="outline" size="sm" onClick={() => setZerodhaDialogOpen(true)}>Setup steps</Button>
@@ -2362,12 +2388,19 @@ function SettingsView({
               />
               <ProviderCard
                 title="Groww Connect"
-                description="Live LTP confirmation for the top 50 stocks using your daily Groww Trading API token."
+                description={`Live LTP confirmation using your daily Groww access token.${groww?.lastVerifiedAt ? ` Saved row last verified ${formatIstDateTime(groww.lastVerifiedAt)}.` : ''}`}
                 selected={value.provider === 'GROWW_CONNECT'}
                 status={!groww?.configured ? 'Setup required' : groww.connected ? 'Connected' : groww?.expired ? 'Session expired' : 'Not connected'}
                 onSelect={groww?.connected ? () => onChange({ ...value, provider: 'GROWW_CONNECT' }) : undefined}
                 action={groww?.connected ? (
-                  <Button variant="outline" size="sm" onClick={() => void onDisconnectBroker('GROWW_CONNECT')}>Disconnect</Button>
+                  <div className="flex flex-wrap gap-2">
+                    <Button size="sm" disabled={brokerBusy} onClick={async () => {
+                      setBrokerBusy(true); setBrokerError(null);
+                      try { await onTestBroker('GROWW_CONNECT'); } catch (error) { setBrokerError(error instanceof Error ? error.message : 'Groww test failed'); }
+                      finally { setBrokerBusy(false); }
+                    }}><Radio /> Test live connection</Button>
+                    <Button variant="outline" size="sm" onClick={() => void onDisconnectBroker('GROWW_CONNECT')}>Disconnect</Button>
+                  </div>
                 ) : (
                   <div className="flex flex-wrap gap-2">
                     <Button variant="outline" size="sm" onClick={() => setGrowwDialogOpen(true)}>Setup steps</Button>
@@ -2376,6 +2409,11 @@ function SettingsView({
                 )}
               />
             </div>
+            {brokerError && (
+              <div className="mt-4 flex items-start gap-2 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">
+                <AlertTriangle className="mt-0.5 size-4 shrink-0" /> {brokerError}
+              </div>
+            )}
             <p className="mt-4 text-xs leading-relaxed text-slate-500">
               Live providers update prices every 30 seconds while this dashboard is open. Historical scoring still comes from validated NSE EOD data.
             </p>
