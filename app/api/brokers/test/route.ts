@@ -69,10 +69,19 @@ export async function POST(request: Request) {
         // Return the broker rejection even if persisting the status fails.
       }
     }
+    if (message.startsWith('BROKER_PERMISSION_DENIED:') && userId && provider) {
+      try {
+        await markBrokerConnectionStatus(userId, provider, 'ERROR');
+      } catch {
+        // Return the permission error even if persisting the status fails.
+      }
+    }
     const status = message === 'AUTHENTICATION_REQUIRED' ? 401 : message === 'RATE_LIMITED' ? 429 : 502;
     return NextResponse.json({
       error: message === 'BROKER_AUTH_REJECTED'
         ? 'Supabase row exists, but the broker rejected its token; reconnect with today\'s token'
+        : message.startsWith('BROKER_PERMISSION_DENIED:')
+          ? `Token is valid, but Groww denied live-market data: ${message.slice('BROKER_PERMISSION_DENIED:'.length)}`
         : message,
       rowFound: message === 'AUTHENTICATION_REQUIRED' ? undefined : true,
     }, { status });

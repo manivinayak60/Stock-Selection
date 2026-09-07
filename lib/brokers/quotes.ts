@@ -63,9 +63,11 @@ export async function fetchGrowwQuotes(symbols: string[], accessToken: string) {
       error?: { code?: string; message?: string };
       payload?: Record<string, number>;
     };
-    if (response.status === 401 || response.status === 403) throw new Error('BROKER_AUTH_REJECTED');
+    const growwError = body.error?.message || body.message || `Groww quote request failed (${response.status})`;
+    if (response.status === 401) throw new Error('BROKER_AUTH_REJECTED');
+    if (response.status === 403) throw new Error(`BROKER_PERMISSION_DENIED:${growwError}`);
     if (!response.ok || body.status !== 'SUCCESS') {
-      throw new Error(body.error?.message || body.message || `Groww quote request failed (${response.status})`);
+      throw new Error(growwError);
     }
     const updatedAt = new Date().toISOString();
     return Object.entries(body.payload ?? {}).map(([key, value]) => ({
@@ -88,7 +90,7 @@ export async function fetchGrowwQuotes(symbols: string[], accessToken: string) {
         quotes.push(...result.value);
       } else {
         const message = result.reason instanceof Error ? result.reason.message : 'Unknown Groww batch failure';
-        if (message === 'BROKER_AUTH_REJECTED') throw result.reason;
+        if (message === 'BROKER_AUTH_REJECTED' || message.startsWith('BROKER_PERMISSION_DENIED:')) throw result.reason;
         warnings.push(message);
       }
     }

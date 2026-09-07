@@ -36,6 +36,7 @@ export async function GET() {
           accountId: row?.account_id ?? null,
           expiresAt: row?.token_expires_at ?? null,
           lastVerifiedAt: row?.last_verified_at ?? null,
+          rowStatus: row?.status ?? 'MISSING',
         };
       }),
     });

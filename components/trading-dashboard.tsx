@@ -367,10 +367,8 @@ export function TradingDashboard() {
   }, [loadState]);
 
   const loadMarket = useCallback(async () => {
-    const controller = new AbortController();
     try {
       const response = await fetch('/api/market', {
-        signal: controller.signal,
         cache: 'no-store',
       });
       const data = (await response.json()) as {
@@ -386,14 +384,11 @@ export function TradingDashboard() {
       setMarketMeta(data.meta);
       setRuns(data.history ?? []);
       setMarketError(null);
+      return data.meta;
     } catch (error) {
-      if (!controller.signal.aborted) {
-        setMarketCandidates([]);
-        setMarketMeta(null);
-        setMarketError(error instanceof Error ? error.message : 'Market scan unavailable');
-      }
+      setMarketError(error instanceof Error ? error.message : 'Market scan unavailable');
+      return null;
     }
-    return () => controller.abort();
   }, []);
 
   useEffect(() => {
@@ -632,6 +627,7 @@ export function TradingDashboard() {
   );
 
   const runScan = useCallback(async () => {
+    const priorCompletion = marketMeta?.completedAt ?? null;
     setScanState('running');
     try {
       const response = await fetch('/api/pipeline/run', { method: 'POST' });
@@ -655,10 +651,20 @@ export function TradingDashboard() {
       }
       window.setTimeout(() => setScanState('idle'), 1800);
     } catch (error) {
+      // A long Vercel request can finish successfully after the browser loses
+      // the response. Reconcile with the persisted scan before reporting a
+      // false failure to the user.
+      const recovered = await loadMarket();
+      if (recovered?.completedAt && recovered.completedAt !== priorCompletion) {
+        setScanState('complete');
+        notify('NSE EOD sync completed and was recovered from the saved database result.');
+        window.setTimeout(() => setScanState('idle'), 1800);
+        return;
+      }
       setScanState('idle');
       notify(error instanceof Error ? error.message : 'EOD scan failed');
     }
-  }, [loadMarket, notify]);
+  }, [loadMarket, marketMeta?.completedAt, notify]);
 
   const importFundamentals = useCallback(async (file: File, sourceUrl: string) => {
     if (file.size > 2_000_000) throw new Error('Fundamentals CSV must be smaller than 2 MB');
@@ -705,10 +711,27 @@ export function TradingDashboard() {
     });
     const data = await response.json() as { error?: string };
     if (!response.ok) throw new Error(data.error || 'Groww connection failed');
+    const testResponse = await fetch('/api/brokers/test', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ provider: 'GROWW_CONNECT' }),
+    });
+    const testData = await testResponse.json() as {
+      error?: string;
+      quote?: { symbol: string; lastPrice: number };
+    };
+    if (!testResponse.ok || !testData.quote) {
+      await loadBrokerStatus();
+      throw new Error(testData.error || 'Groww accepted the account but live-market data validation failed');
+    }
+    const activated = { ...settingsDraft, provider: 'GROWW_CONNECT' as const };
+    await postState({ action: 'saveSettings', settings: activated });
+    setSettings(activated);
+    setSettingsDraft(activated);
     await loadBrokerStatus();
-    setSettingsDraft((current) => ({ ...current, provider: 'GROWW_CONNECT' }));
-    notify('Groww connected. Save settings to activate live prices.');
-  }, [loadBrokerStatus, notify]);
+    setLiveRefreshKey((value) => value + 1);
+    notify(`Groww connected and live data verified with ${testData.quote.symbol} ${money(testData.quote.lastPrice, 2)}.`);
+  }, [loadBrokerStatus, notify, settingsDraft]);
 
   const testLiveBroker = useCallback(async (provider: 'KITE_CONNECT' | 'GROWW_CONNECT') => {
     const response = await fetch('/api/brokers/test', {
@@ -2364,7 +2387,7 @@ function SettingsView({
                 title="Zerodha Kite Connect"
                 description={`Live price confirmation for the ranked stocks. Requires the data plan and daily login.${kite?.lastVerifiedAt ? ` Saved row last verified ${formatIstDateTime(kite.lastVerifiedAt)}.` : ''}`}
                 selected={value.provider === 'KITE_CONNECT'}
-                status={!kite?.configured ? 'Setup required' : kite.connected ? 'Connected' : kite?.expired ? 'Session expired' : 'Not connected'}
+                status={!kite?.configured ? 'Setup required' : kite.connected ? 'Connected' : kite?.expired ? 'Session expired' : kite?.rowStatus === 'ERROR' ? 'API permission error' : 'Not connected'}
                 onSelect={kite?.connected ? () => onChange({ ...value, provider: 'KITE_CONNECT' }) : undefined}
                 action={kite?.connected ? (
                   <div className="flex flex-wrap gap-2">
@@ -2390,7 +2413,7 @@ function SettingsView({
                 title="Groww Connect"
                 description={`Live LTP confirmation using your daily Groww access token.${groww?.lastVerifiedAt ? ` Saved row last verified ${formatIstDateTime(groww.lastVerifiedAt)}.` : ''}`}
                 selected={value.provider === 'GROWW_CONNECT'}
-                status={!groww?.configured ? 'Setup required' : groww.connected ? 'Connected' : groww?.expired ? 'Session expired' : 'Not connected'}
+                status={!groww?.configured ? 'Setup required' : groww.connected ? 'Connected' : groww?.expired ? 'Session expired' : groww?.rowStatus === 'ERROR' ? 'Live-data permission error' : 'Not connected'}
                 onSelect={groww?.connected ? () => onChange({ ...value, provider: 'GROWW_CONNECT' }) : undefined}
                 action={groww?.connected ? (
                   <div className="flex flex-wrap gap-2">

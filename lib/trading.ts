@@ -79,6 +79,7 @@ export type BrokerConnectionStatus = {
   accountId: string | null;
   expiresAt: string | null;
   lastVerifiedAt: string | null;
+  rowStatus: 'CONNECTED' | 'EXPIRED' | 'ERROR' | 'MISSING';
 };
 
 export type Opportunity = CandidateSnapshot & {

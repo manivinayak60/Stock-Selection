@@ -35,3 +35,17 @@ void test('Groww authentication rejection invalidates the whole request', async 
     /BROKER_AUTH_REJECTED/,
   );
 });
+
+void test('Groww permission denial is distinct from an expired token', async (context) => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => new Response(
+    JSON.stringify({ status: 'FAILURE', error: { message: 'Live data entitlement required' } }),
+    { status: 403 },
+  )) as typeof fetch;
+  context.after(() => { globalThis.fetch = originalFetch; });
+
+  await assert.rejects(
+    fetchGrowwQuotes(['RELIANCE'], 'valid-but-unentitled-token'),
+    /BROKER_PERMISSION_DENIED:Live data entitlement required/,
+  );
+});
