@@ -50,7 +50,7 @@ export async function GET() {
   const { supabase, userId } = await authenticatedClient();
   if (!userId) return unauthorized();
 
-  const [settingsResult, watchlistResult, tradesResult, runsResult] = await Promise.all([
+  const [settingsResult, watchlistResult, tradesResult, marksResult, runsResult] = await Promise.all([
     supabase
       .from('settings')
       .select('capital, normal_risk, hard_risk, per_stock_risk, max_positions, max_sector_allocation, provider, screener_url')
@@ -63,9 +63,14 @@ export async function GET() {
       .order('created_at', { ascending: false }),
     supabase
       .from('paper_trades')
-      .select('id, symbol, sector, setup, status, entry, stop, target, quantity, opened_at, closed_at, exit_price, notes, signal_score, signal_status, signal_market_date, evidence_status, exit_reason')
+      .select('id, symbol, sector, setup, status, entry, stop, target, quantity, opened_at, entry_market_date, closed_at, exit_price, notes, signal_score, signal_status, signal_market_date, evidence_status, exit_reason')
       .eq('user_id', userId)
       .order('opened_at', { ascending: false }),
+    supabase
+      .from('paper_trade_daily_marks')
+      .select('paper_trade_id, market_date, open, high, low, close, source, recorded_at')
+      .eq('user_id', userId)
+      .order('market_date', { ascending: true }),
     supabase
       .from('scan_runs')
       .select('id, market_date, provider, status, universe_count, qualified_count, created_at')
@@ -74,8 +79,14 @@ export async function GET() {
       .limit(10),
   ]);
 
-  const error = settingsResult.error ?? watchlistResult.error ?? tradesResult.error ?? runsResult.error;
+  const error = settingsResult.error ?? watchlistResult.error ?? tradesResult.error ?? marksResult.error ?? runsResult.error;
   if (error) return databaseError(error.message);
+
+  const marksByTrade = new Map<number, typeof marksResult.data>();
+  for (const mark of marksResult.data ?? []) {
+    const tradeId = Number(mark.paper_trade_id);
+    marksByTrade.set(tradeId, [...(marksByTrade.get(tradeId) ?? []), mark]);
+  }
 
   return NextResponse.json({
     settings: mapSettings(settingsResult.data),
@@ -95,6 +106,7 @@ export async function GET() {
       target: row.target,
       quantity: row.quantity,
       openedAt: row.opened_at,
+      entryMarketDate: row.entry_market_date,
       closedAt: row.closed_at,
       exitPrice: row.exit_price,
       notes: row.notes,
@@ -103,6 +115,15 @@ export async function GET() {
       signalMarketDate: row.signal_market_date,
       evidenceStatus: row.evidence_status,
       exitReason: row.exit_reason,
+      dailyMarks: (marksByTrade.get(Number(row.id)) ?? []).map((mark) => ({
+        marketDate: mark.market_date,
+        open: Number(mark.open),
+        high: Number(mark.high),
+        low: Number(mark.low),
+        close: Number(mark.close),
+        source: mark.source,
+        recordedAt: mark.recorded_at,
+      })),
     })),
     runs: (runsResult.data ?? []).map((row) => ({
       id: row.id,
@@ -212,13 +233,14 @@ export async function POST(request: Request) {
     }
     const tradeId = Number(result.data);
     const signalScore = Number(body.signalScore);
-    await supabase.from('paper_trades').update({
+    const updated = await supabase.from('paper_trades').update({
       signal_score: Number.isFinite(signalScore) ? signalScore : null,
       signal_status: typeof body.signalStatus === 'string' ? body.signalStatus : null,
       signal_market_date: typeof body.signalMarketDate === 'string' ? body.signalMarketDate : null,
       evidence_status: typeof body.evidenceStatus === 'string' ? body.evidenceStatus : null,
-    }).eq('id', tradeId).eq('user_id', userId);
-    return NextResponse.json({ ok: true, id: tradeId });
+    }).eq('id', tradeId).eq('user_id', userId).select('entry_market_date').single();
+    if (updated.error) return databaseError(updated.error.message);
+    return NextResponse.json({ ok: true, id: tradeId, entryMarketDate: updated.data.entry_market_date });
   }
 
   if (action === 'closeTrade') {

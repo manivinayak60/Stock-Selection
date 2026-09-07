@@ -149,6 +149,51 @@ export async function persistDailyPrices(
   if (error) throw new Error(error.message);
 }
 
+export async function refreshOpenPaperTradeMarks(
+  admin: SupabaseClient,
+  throughDate: string,
+) {
+  const trades = await admin
+    .from('paper_trades')
+    .select('id,user_id,symbol,entry_market_date')
+    .eq('status', 'OPEN');
+  if (trades.error) throw new Error(trades.error.message);
+  const rows: Record<string, unknown>[] = [];
+  for (const trade of trades.data ?? []) {
+    const prices = await admin
+      .from('eod_prices')
+      .select('market_date,open,high,low,close')
+      .eq('symbol', trade.symbol)
+      .gt('market_date', trade.entry_market_date)
+      .lte('market_date', throughDate)
+      .order('market_date', { ascending: true })
+      .limit(30);
+    if (prices.error) throw new Error(prices.error.message);
+    rows.push(...(prices.data ?? []).map((price) => ({
+      user_id: trade.user_id,
+      paper_trade_id: trade.id,
+      symbol: trade.symbol,
+      market_date: price.market_date,
+      open: price.open,
+      high: price.high,
+      low: price.low,
+      close: price.close,
+      source: 'NSE_EOD',
+      recorded_at: new Date().toISOString(),
+    })));
+  }
+  if (!rows.length) return 0;
+  await writeBatches(
+    rows,
+    (batch) => admin.from('paper_trade_daily_marks').upsert(
+      batch,
+      { onConflict: 'paper_trade_id,market_date' },
+    ),
+    100,
+  );
+  return rows.length;
+}
+
 export async function createScan(
   admin: SupabaseClient,
   universe: Instrument[],
@@ -262,6 +307,11 @@ export async function runDailyPipeline(admin: SupabaseClient, now = new Date()) 
     appendCandle(states.get('NIFTY500') ?? [], session.benchmark, STATE_LIMIT),
   );
   await persistStates(admin, states);
+  try {
+    await refreshOpenPaperTradeMarks(admin, session.date);
+  } catch (error) {
+    fundamentalsWarnings.push(`Paper-trade daily valuation refresh failed: ${error instanceof Error ? error.message : 'unknown error'}`);
+  }
   const result = await createScan(
     admin,
     universe,

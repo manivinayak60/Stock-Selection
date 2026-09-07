@@ -57,6 +57,7 @@ import {
   buildOpportunities,
   getNifty50Top20,
   isBullishCandidate,
+  paperTradePerformance,
   defaultSettings,
   type CandidateSnapshot,
   type BrokerConnectionStatus,
@@ -146,6 +147,13 @@ const formatIstDateTime = (date: string | null | undefined) =>
         timeZone: 'Asia/Kolkata',
       }).format(new Date(date)) + ' IST'
     : 'Not synced yet';
+const currentIstDate = () => {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    year: 'numeric', month: '2-digit', day: '2-digit', timeZone: 'Asia/Kolkata',
+  }).formatToParts(new Date());
+  const value = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${value.year}-${value.month}-${value.day}`;
+};
 
 const currentMove = (stock: Opportunity) =>
   stock.liveChangePercent ?? stock.change;
@@ -563,15 +571,17 @@ export function TradingDashboard() {
         sector: stock.sector,
         setup: stock.setup,
         status: 'OPEN',
-        entry: stock.entryHigh,
+        entry: stock.appliedPrice,
         stop: stock.stop,
         target: stock.target1,
         quantity: stock.quantity,
         openedAt: new Date().toISOString(),
+        entryMarketDate: currentIstDate(),
         signalScore: stock.score,
         signalStatus: stock.status,
         signalMarketDate: stock.asOfDate,
         evidenceStatus: stock.evidenceStatus,
+        dailyMarks: [],
       };
       setTrades((current) => [tempTrade, ...current]);
       setSelected(null);
@@ -588,7 +598,13 @@ export function TradingDashboard() {
         setTrades((current) =>
           current.map((t) =>
             t.id === tempTrade.id
-              ? { ...t, id: Number(data.id ?? tempTrade.id) }
+              ? {
+                  ...t,
+                  id: Number(data.id ?? tempTrade.id),
+                  entryMarketDate: typeof data.entryMarketDate === 'string'
+                    ? data.entryMarketDate
+                    : t.entryMarketDate,
+                }
               : t,
           ),
         );
@@ -1519,6 +1535,9 @@ function OpportunitiesView({
                 )}
                 <h3 className="text-lg font-semibold">{stock.symbol}</h3>
                 <StatusPill status={stock.status} />
+                <span className={`rounded-full px-2 py-1 text-xs font-semibold ${stock.executionState === 'IN_ZONE' ? 'bg-emerald-100 text-emerald-800' : stock.executionState === 'EXTENDED' ? 'bg-rose-100 text-rose-800' : 'bg-amber-100 text-amber-800'}`}>
+                  {stock.executionLabel}
+                </span>
                 {options?.colorByBullish && (
                   <span className={`rounded-full px-2 py-1 text-xs font-semibold ${bullish ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'}`}>
                     {bullish ? 'Bullish' : 'Not bullish'}
@@ -1578,7 +1597,7 @@ function OpportunitiesView({
               <MiniChart values={stock.prices} />
             </div>
           </div>
-          <div className="mt-5 grid grid-cols-4 gap-2 rounded-xl border border-slate-100 bg-slate-50/80 p-3 text-sm">
+          <div className="mt-5 grid grid-cols-2 gap-2 rounded-xl border border-slate-100 bg-slate-50/80 p-3 text-sm sm:grid-cols-4">
             <div>
               <p className="text-xs text-slate-500">Day move</p>
               <p className={`mt-1 font-semibold ${currentMove(stock) >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
@@ -1586,21 +1605,25 @@ function OpportunitiesView({
               </p>
             </div>
             <div>
-              <p className="text-xs text-slate-500">Entry</p>
-              <p className="mt-1 font-semibold">{money(stock.entryHigh, 0)}</p>
+              <p className="text-xs text-slate-500">Apply price</p>
+              <p className="mt-1 font-semibold">{money(stock.appliedPrice, 0)}</p>
             </div>
             <div>
-              <p className="text-xs text-slate-500">Stop</p>
-              <p className="mt-1 font-semibold text-rose-700">
-                {money(stock.stop, 0)}
+              <p className="text-xs text-slate-500">Target 1</p>
+              <p className="mt-1 font-semibold text-emerald-700">
+                {money(stock.target1, 0)} <span className="text-xs">(+{stock.upsideToTarget1Pct.toFixed(1)}%)</span>
               </p>
             </div>
             <div>
-              <p className="text-xs text-slate-500">Qty / risk</p>
-              <p className="mt-1 font-semibold">
-                {stock.quantity} / {money(stock.plannedRisk)}
-              </p>
+              <p className="text-xs text-slate-500">Stop / downside</p>
+              <p className="mt-1 font-semibold text-rose-700">{money(stock.stop, 0)} ({stock.downsideToStopPct.toFixed(1)}%)</p>
             </div>
+          </div>
+          <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
+            <span>Entry zone {money(stock.entryLow, 0)}–{money(stock.entryHigh, 0)} · R:R {stock.rewardRisk.toFixed(1)}:1</span>
+            <span className="font-semibold text-slate-700">
+              {stock.quantity} shares · risk {money(stock.plannedRisk)}
+            </span>
           </div>
           <p className="mt-4 line-clamp-2 text-sm leading-relaxed text-slate-600">
             {stock.thesis}
@@ -1817,6 +1840,80 @@ function WatchlistView({
   );
 }
 
+function PaperTradeJourneyCard({ trade, onClose }: { trade: PaperTrade; onClose: (trade: PaperTrade) => void }) {
+  const performance = paperTradePerformance(trade);
+  const marks = [...(trade.dailyMarks ?? [])].sort((a, b) => a.marketDate.localeCompare(b.marketDate));
+  const values = [trade.entry, ...marks.map((mark) => mark.close)];
+  const rows = marks.map((mark, index) => {
+    const previous = index > 0 ? marks[index - 1].close : trade.entry;
+    const dailyPnl = (mark.close - previous) * trade.quantity;
+    const cumulativePnl = (mark.close - trade.entry) * trade.quantity;
+    return { ...mark, dailyPnl, cumulativePnl };
+  });
+  const positive = performance.totalPnl >= 0;
+  return (
+    <article className="panel overflow-hidden">
+      <div className="flex flex-col justify-between gap-4 border-b border-slate-100 p-5 sm:flex-row sm:items-start">
+        <div>
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 className="text-lg font-semibold">{trade.symbol}</h2>
+            <span className="rounded-full bg-blue-50 px-2.5 py-1 text-xs font-semibold text-blue-800">{trade.setup}</span>
+            <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-700">{performance.sessionsMarked} EOD marks</span>
+          </div>
+          <p className="mt-1 text-xs text-slate-500">Applied {formatMarketDate(trade.entryMarketDate)} at {money(trade.entry, 2)} · {trade.quantity} shares</p>
+        </div>
+        <div className="flex items-center gap-4">
+          {values.length > 1 && <div className={positive ? 'text-emerald-600' : 'text-rose-600'}><MiniChart values={values} /></div>}
+          <Button variant="outline" size="sm" onClick={() => onClose(trade)}>Close trade</Button>
+        </div>
+      </div>
+      <div className="grid grid-cols-2 gap-px bg-slate-100 md:grid-cols-3 xl:grid-cols-6">
+        {[
+          ['Latest EOD', money(performance.latestPrice, 2), formatMarketDate(performance.latestMarketDate), 'text-slate-950'],
+          ['Latest session', `${performance.dailyChangePct >= 0 ? '+' : ''}${performance.dailyChangePct.toFixed(2)}%`, `${performance.dailyChange >= 0 ? '+' : ''}${money(performance.dailyChange * trade.quantity, 2)}`, performance.dailyChange >= 0 ? 'text-emerald-700' : 'text-rose-700'],
+          ['Total P&L', `${performance.totalPnl >= 0 ? '+' : ''}${money(performance.totalPnl, 2)}`, `${performance.totalPnlPct >= 0 ? '+' : ''}${performance.totalPnlPct.toFixed(2)}%`, positive ? 'text-emerald-700' : 'text-rose-700'],
+          ['Best excursion', `+${money(performance.maxFavourablePnl, 2)}`, 'Using daily highs', 'text-emerald-700'],
+          ['Worst excursion', money(performance.maxAdversePnl, 2), 'Using daily lows', 'text-rose-700'],
+          ['Target / stop', `${performance.targetDistancePct.toFixed(1)}% / ${performance.stopDistancePct.toFixed(1)}%`, `${money(trade.target, 0)} / ${money(trade.stop, 0)}`, 'text-slate-950'],
+        ].map(([label, value, note, tone]) => (
+          <div key={label} className="bg-white p-4">
+            <p className="text-xs text-slate-500">{label}</p>
+            <p className={`mt-1 font-semibold tabular-nums ${tone}`}>{value}</p>
+            <p className="mt-1 text-xs text-slate-400">{note}</p>
+          </div>
+        ))}
+      </div>
+      <details className="group border-t border-slate-100">
+        <summary className="flex cursor-pointer list-none items-center justify-between px-5 py-4 text-sm font-semibold text-blue-800">
+          Daily price and P&amp;L journey
+          <ChevronRight className="size-4 transition group-open:rotate-90" />
+        </summary>
+        <div className="overflow-x-auto border-t border-slate-100">
+          <table className="w-full min-w-[680px] text-left">
+            <thead className="table-head"><tr><th>Session</th><th>Close</th><th>Daily P&amp;L</th><th>From applied price</th><th>Status</th></tr></thead>
+            <tbody className="divide-y divide-slate-100">
+              <tr>
+                <td className="table-cell">{formatMarketDate(trade.entryMarketDate)} <span className="ml-1 text-xs text-blue-700">Applied</span></td>
+                <td className="table-cell">{money(trade.entry, 2)}</td><td className="table-cell">—</td><td className="table-cell">{money(0)}</td>
+                <td className="table-cell"><span className="rounded-full bg-blue-50 px-2 py-1 text-xs font-semibold text-blue-800">Opened</span></td>
+              </tr>
+              {rows.map((row) => (
+                <tr key={row.marketDate}>
+                  <td className="table-cell">{formatMarketDate(row.marketDate)}</td><td className="table-cell">{money(row.close, 2)}</td>
+                  <td className={`table-cell font-semibold ${row.dailyPnl >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>{row.dailyPnl >= 0 ? '+' : ''}{money(row.dailyPnl, 2)}</td>
+                  <td className={`table-cell font-semibold ${row.cumulativePnl >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>{row.cumulativePnl >= 0 ? '+' : ''}{money(row.cumulativePnl, 2)}</td>
+                  <td className="table-cell"><span className={`rounded-full px-2 py-1 text-xs font-semibold ${row.cumulativePnl >= 0 ? 'bg-emerald-50 text-emerald-800' : 'bg-rose-50 text-rose-800'}`}>{row.cumulativePnl >= 0 ? 'Profit' : 'Loss'}</span></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {!rows.length && <p className="p-5 text-sm text-slate-500">The first daily result will appear after the next successful NSE EOD sync following the applied session.</p>}
+        </div>
+      </details>
+    </article>
+  );
+}
+
 function PortfolioView({
   trades,
   openRisk,
@@ -1830,6 +1927,7 @@ function PortfolioView({
   invested: number;
   onClose: (t: PaperTrade) => void;
 }) {
+  const openPnl = trades.reduce((sum, trade) => sum + paperTradePerformance(trade).totalPnl, 0);
   return (
     <div className="space-y-5">
       <div>
@@ -1839,7 +1937,7 @@ function PortfolioView({
           same portfolio limits.
         </p>
       </div>
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
         <MetricCard
           label="Capital deployed"
           value={money(invested)}
@@ -1853,6 +1951,13 @@ function PortfolioView({
           note={`${Math.round((openRisk / settings.hardRisk) * 100) || 0}% of hard ceiling`}
           icon={ShieldCheck}
           tone="amber"
+        />
+        <MetricCard
+          label="Open paper P&L"
+          value={`${openPnl >= 0 ? '+' : ''}${money(openPnl)}`}
+          note="Latest validated EOD marks"
+          icon={TrendingUp}
+          tone={openPnl >= 0 ? 'emerald' : 'amber'}
         />
         <MetricCard
           label="Open positions"
@@ -1874,60 +1979,8 @@ function PortfolioView({
         />
       </div>
       {trades.length ? (
-        <div className="panel overflow-x-auto">
-          <table className="w-full min-w-[850px] text-left">
-            <thead className="table-head">
-              <tr>
-                {[
-                  'Stock',
-                  'Opened',
-                  'Entry',
-                  'Stop',
-                  'Target',
-                  'Quantity',
-                  'Open risk',
-                  'Action',
-                ].map((h) => (
-                  <th key={h}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {trades.map((trade) => (
-                <tr key={trade.id}>
-                  <td className="table-cell font-semibold">
-                    {trade.symbol}
-                    <p className="text-xs font-normal text-slate-500">
-                      {trade.setup}
-                    </p>
-                  </td>
-                  <td className="table-cell">
-                    {new Date(trade.openedAt).toLocaleDateString('en-IN')}
-                  </td>
-                  <td className="table-cell">{money(trade.entry, 2)}</td>
-                  <td className="table-cell text-rose-700">
-                    {money(trade.stop, 2)}
-                  </td>
-                  <td className="table-cell text-emerald-700">
-                    {money(trade.target, 2)}
-                  </td>
-                  <td className="table-cell">{trade.quantity}</td>
-                  <td className="table-cell font-semibold">
-                    {money((trade.entry - trade.stop) * trade.quantity)}
-                  </td>
-                  <td className="table-cell">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => onClose(trade)}
-                    >
-                      Close paper trade
-                    </Button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div className="space-y-4">
+          {trades.map((trade) => <PaperTradeJourneyCard key={trade.id} trade={trade} onClose={onClose} />)}
         </div>
       ) : (
         <EmptyState
@@ -2843,6 +2896,8 @@ function OpportunityDialog({
   const blocked =
     !paperTradeEligible ||
     stock.quantity < 1 ||
+    stock.appliedPrice <= stock.stop ||
+    stock.appliedPrice >= stock.target1 ||
     openRisk + stock.plannedRisk > hardRisk;
   return (
     <Dialog open={Boolean(stock)} onOpenChange={(open) => !open && onClose()}>
@@ -2919,6 +2974,8 @@ function OpportunityDialog({
                 'Entry zone',
                 `${money(stock.entryLow, 2)}–${money(stock.entryHigh, 2)}`,
               ],
+              ['Applied price', money(stock.appliedPrice, 2)],
+              ['Execution', stock.executionLabel],
               ['Stop', money(stock.stop, 2)],
               ['Support', money(support, 2)],
               ['Resistance', money(resistance, 2)],
@@ -2928,6 +2985,8 @@ function OpportunityDialog({
               ['Capital', money(stock.capitalRequired)],
               ['Max loss', money(stock.plannedRisk)],
               ['Reward:risk', `${stock.rewardRisk.toFixed(1)} : 1`],
+              ['Potential upside', `${stock.upsideToTarget1Pct.toFixed(2)}%`],
+              ['Stop downside', `${stock.downsideToStopPct.toFixed(2)}%`],
             ].map(([label, value]) => (
               <div key={label} className="rounded-xl bg-slate-50 p-3">
                 <p className="text-xs text-slate-500">{label}</p>
@@ -2982,8 +3041,10 @@ function OpportunityDialog({
             {blocked
               ? !paperTradeEligible
                 ? 'Paper trade from Top 70+ or Nifty 20'
-                : 'Risk limit blocks entry'
-              : 'Create paper trade'}
+                : stock.appliedPrice <= stock.stop || stock.appliedPrice >= stock.target1
+                  ? 'Price is outside the valid trade plan'
+                  : 'Risk limit blocks entry'
+              : `Apply at ${money(stock.appliedPrice, 2)} · ${stock.quantity} shares`}
           </Button>
         </DialogFooter>
       </DialogContent>

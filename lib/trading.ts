@@ -83,6 +83,7 @@ export type BrokerConnectionStatus = {
 };
 
 export type Opportunity = CandidateSnapshot & {
+  appliedPrice: number;
   entryLow: number;
   entryHigh: number;
   stop: number;
@@ -92,6 +93,20 @@ export type Opportunity = CandidateSnapshot & {
   capitalRequired: number;
   plannedRisk: number;
   rewardRisk: number;
+  executionState: 'BELOW_ZONE' | 'IN_ZONE' | 'ABOVE_ZONE' | 'EXTENDED';
+  executionLabel: string;
+  upsideToTarget1Pct: number;
+  downsideToStopPct: number;
+};
+
+export type PaperTradeDailyMark = {
+  marketDate: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  source: 'NSE_EOD';
+  recordedAt: string;
 };
 
 export type PaperTrade = {
@@ -105,6 +120,7 @@ export type PaperTrade = {
   target: number;
   quantity: number;
   openedAt: string;
+  entryMarketDate: string;
   closedAt?: string | null;
   exitPrice?: number | null;
   notes?: string;
@@ -113,6 +129,21 @@ export type PaperTrade = {
   signalMarketDate?: string | null;
   evidenceStatus?: CandidateSnapshot['evidenceStatus'] | null;
   exitReason?: string | null;
+  dailyMarks: PaperTradeDailyMark[];
+};
+
+export type PaperTradePerformance = {
+  latestPrice: number;
+  latestMarketDate: string;
+  dailyChange: number;
+  dailyChangePct: number;
+  totalPnl: number;
+  totalPnlPct: number;
+  sessionsMarked: number;
+  maxFavourablePnl: number;
+  maxAdversePnl: number;
+  targetDistancePct: number;
+  stopDistancePct: number;
 };
 
 export const defaultSettings: Settings = {
@@ -139,12 +170,15 @@ export function buildOpportunities(
 ): Opportunity[] {
   return candidates
     .map((candidate) => {
-      const planningPrice = candidate.livePrice ?? candidate.close;
+      // Keep the plan fixed to the validated EOD signal. A broker quote is an
+      // execution observation and must not move the entry zone around itself.
+      const planningPrice = candidate.close;
+      const appliedPrice = candidate.livePrice ?? candidate.close;
       const stopDistance = Math.max(candidate.atr * 1.65, planningPrice * 0.032);
       const entryLow = planningPrice - candidate.atr * 0.3;
       const entryHigh = planningPrice + candidate.atr * 0.18;
       const stop = entryLow - stopDistance;
-      const riskPerShare = entryHigh - stop;
+      const executionRiskPerShare = Math.max(appliedPrice, entryHigh) - stop;
       const remainingRisk = Math.max(0, settings.hardRisk - (portfolio.openRisk ?? 0));
       const remainingCapital = Math.max(0, settings.capital - (portfolio.invested ?? 0));
       const sectorRoom = Math.max(
@@ -155,25 +189,72 @@ export function buildOpportunities(
       const quantity = Math.max(
         0,
         Math.min(
-          Math.floor(Math.min(settings.perStockRisk, remainingRisk) / riskPerShare),
-          Math.floor(Math.min(remainingCapital, sectorRoom) / entryHigh),
+          Math.floor(Math.min(settings.perStockRisk, remainingRisk) / executionRiskPerShare),
+          Math.floor(Math.min(remainingCapital, sectorRoom) / Math.max(appliedPrice, entryHigh)),
         ),
       );
+      const target1 = entryHigh + (entryHigh - stop) * 2;
+      const target2 = entryHigh + (entryHigh - stop) * 3;
+      const executionState: Opportunity['executionState'] = appliedPrice < entryLow
+        ? 'BELOW_ZONE'
+        : appliedPrice <= entryHigh
+          ? 'IN_ZONE'
+          : appliedPrice <= entryHigh + candidate.atr * 0.5
+            ? 'ABOVE_ZONE'
+            : 'EXTENDED';
       return {
         ...candidate,
-        close: planningPrice,
+        appliedPrice: round(appliedPrice),
         entryLow: round(entryLow),
         entryHigh: round(entryHigh),
         stop: round(stop),
-        target1: round(entryHigh + riskPerShare * 2),
-        target2: round(entryHigh + riskPerShare * 3),
+        target1: round(target1),
+        target2: round(target2),
         quantity,
-        capitalRequired: round(quantity * entryHigh),
-        plannedRisk: round(quantity * riskPerShare),
-        rewardRisk: 2,
+        capitalRequired: round(quantity * appliedPrice),
+        plannedRisk: round(quantity * Math.max(0, appliedPrice - stop)),
+        rewardRisk: round((target1 - appliedPrice) / Math.max(appliedPrice - stop, 0.01), 1),
+        executionState,
+        executionLabel: executionState === 'IN_ZONE'
+          ? 'Inside entry zone'
+          : executionState === 'BELOW_ZONE'
+            ? 'Below entry zone'
+            : executionState === 'ABOVE_ZONE'
+              ? 'Above entry zone'
+              : 'Extended — avoid chasing',
+        upsideToTarget1Pct: round(((target1 / appliedPrice) - 1) * 100),
+        downsideToStopPct: round(((stop / appliedPrice) - 1) * 100),
       };
     })
     .sort((a, b) => b.score - a.score);
+}
+
+export function paperTradePerformance(trade: PaperTrade): PaperTradePerformance {
+  const marks = [...(trade.dailyMarks ?? [])].sort((a, b) =>
+    a.marketDate.localeCompare(b.marketDate),
+  );
+  const latestMark = marks.at(-1);
+  const previousPrice = marks.at(-2)?.close ?? trade.entry;
+  const latestPrice = trade.status === 'CLOSED' && trade.exitPrice
+    ? trade.exitPrice
+    : latestMark?.close ?? trade.entry;
+  const dailyChange = latestPrice - previousPrice;
+  const totalPnl = (latestPrice - trade.entry) * trade.quantity;
+  const high = Math.max(trade.entry, ...marks.map((mark) => mark.high));
+  const low = Math.min(trade.entry, ...marks.map((mark) => mark.low));
+  return {
+    latestPrice: round(latestPrice),
+    latestMarketDate: latestMark?.marketDate ?? trade.entryMarketDate,
+    dailyChange: round(dailyChange),
+    dailyChangePct: round((dailyChange / previousPrice) * 100),
+    totalPnl: round(totalPnl),
+    totalPnlPct: round(((latestPrice / trade.entry) - 1) * 100),
+    sessionsMarked: marks.length,
+    maxFavourablePnl: round((high - trade.entry) * trade.quantity),
+    maxAdversePnl: round((low - trade.entry) * trade.quantity),
+    targetDistancePct: round(((trade.target / latestPrice) - 1) * 100),
+    stopDistancePct: round(((trade.stop / latestPrice) - 1) * 100),
+  };
 }
 
 export function bullishLeaderScore(candidate: CandidateSnapshot) {
