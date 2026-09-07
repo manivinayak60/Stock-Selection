@@ -414,6 +414,27 @@ export function TradingDashboard() {
   }, [loadBrokerStatus]);
 
   useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const broker = params.get('broker');
+    const brokerError = params.get('broker_error');
+    if (!broker && !brokerError) return;
+    const timer = window.setTimeout(() => {
+      if (broker === 'zerodha_connected') {
+        notify('Zerodha connected and verified with a live RELIANCE quote. Select Zerodha in Settings to use live prices.');
+        void loadBrokerStatus();
+      } else if (brokerError === 'zerodha_permission_denied') {
+        notify('Zerodha login succeeded, but Kite Connect denied market-data access. Check the active subscription and app permissions.');
+      } else if (brokerError === 'zerodha_token_rejected') {
+        notify('Zerodha rejected the session token. Start Connect Zerodha again and finish the login in the same browser.');
+      } else {
+        notify('Zerodha connection could not be verified. Check the registered redirect URL and Vercel credentials.');
+      }
+      window.history.replaceState({}, '', window.location.pathname);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [loadBrokerStatus, notify]);
+
+  useEffect(() => {
     if (settings.provider === 'FREE_EOD') {
       const resetTimer = window.setTimeout(() => {
         setLiveQuotes([]);
@@ -639,7 +660,7 @@ export function TradingDashboard() {
       if (!response.ok) throw new Error(data.error || 'EOD pipeline failed');
       await loadMarket();
       setScanState('complete');
-      notify('Validated NSE EOD scan completed.');
+      notify(`Validated NSE EOD scan completed for ${formatMarketDate(data.marketDate)}.`);
       if (
         typeof Notification !== 'undefined' &&
         Notification.permission === 'granted' &&
@@ -2741,10 +2762,10 @@ function SettingsView({
           </ol>
           <div className="break-all rounded-xl bg-slate-950 p-3 font-mono text-xs text-emerald-300">{zerodhaRedirect}</div>
           <ol start={3} className="space-y-3 text-sm leading-relaxed text-slate-700">
-            <li><strong>3.</strong> Add <code>KITE_API_KEY</code> and <code>KITE_API_SECRET</code> as Production environment variables in Vercel.</li>
+            <li><strong>3.</strong> Add <code>KITE_API_KEY</code> and <code>KITE_API_SECRET</code> as Production environment variables in Vercel. Keep the existing <code>BROKER_TOKEN_ENCRYPTION_KEY</code>; it encrypts the daily token before Supabase storage.</li>
             <li><strong>4.</strong> Redeploy once, return here, and click Connect Zerodha.</li>
             <li><strong>5.</strong> Complete Zerodha login each trading day; the access token expires daily.</li>
-            <li><strong>6.</strong> Select Zerodha and save Settings. If login expires, NSE EOD remains the fallback.</li>
+            <li><strong>6.</strong> SwingSignal verifies a real RELIANCE quote before showing Zerodha as connected. Then select Zerodha and save Settings. If login expires, NSE EOD remains the fallback.</li>
           </ol>
           <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs leading-relaxed text-amber-900">
             Current status: {kite?.configured ? 'server credentials are configured; you can connect.' : 'KITE_API_KEY or KITE_API_SECRET is still missing in Vercel.'}

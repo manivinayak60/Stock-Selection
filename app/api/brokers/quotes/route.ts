@@ -74,7 +74,7 @@ async function respond(provider: LiveProvider | null, symbols: string[]) {
           : message === 'BROKER_AUTH_REJECTED'
             ? 'Broker session expired; reconnect in Settings'
             : message.startsWith('BROKER_PERMISSION_DENIED:')
-              ? `Groww authenticated the account but denied live-market data: ${message.slice('BROKER_PERMISSION_DENIED:'.length)}`
+              ? `${provider === 'KITE_CONNECT' ? 'Zerodha' : 'Groww'} authenticated the account but denied live-market data: ${message.slice('BROKER_PERMISSION_DENIED:'.length)}`
             : message,
       fallback: 'FREE_EOD',
     }, { status });

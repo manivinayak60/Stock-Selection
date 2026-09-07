@@ -2,6 +2,11 @@ import { parseCsv, numeric } from './csv';
 import type { Candle, Instrument } from './types';
 
 const NSE_ARCHIVE = 'https://nsearchives.nseindia.com';
+const IST_OFFSET_MS = 5.5 * 60 * 60 * 1_000;
+// The cash market closes at 15:30 IST. NSE normally publishes both files soon
+// afterwards, so begin probing today's session at 16:15 and fall back if the
+// archives are still being prepared.
+const SAME_DAY_PROBE_MINUTES_IST = 16 * 60 + 15;
 const REQUEST_HEADERS = {
   accept: 'text/csv,*/*',
   referer: 'https://www.nseindia.com/all-reports',
@@ -156,9 +161,9 @@ export async function fetchNifty500Candle(date: Date): Promise<Candle> {
 }
 
 export function candidateSessionDates(now = new Date(), count = 10) {
-  const istOffsetMs = 5.5 * 60 * 60 * 1_000;
-  const ist = new Date(now.getTime() + istOffsetMs);
-  const beforeExpectedPublication = ist.getUTCHours() < 20;
+  const ist = new Date(now.getTime() + IST_OFFSET_MS);
+  const minutesIst = ist.getUTCHours() * 60 + ist.getUTCMinutes();
+  const beforeExpectedPublication = minutesIst < SAME_DAY_PROBE_MINUTES_IST;
   const start = new Date(Date.UTC(ist.getUTCFullYear(), ist.getUTCMonth(), ist.getUTCDate()));
   if (beforeExpectedPublication) start.setUTCDate(start.getUTCDate() - 1);
   const dates: Date[] = [];

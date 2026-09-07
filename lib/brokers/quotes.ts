@@ -20,6 +20,7 @@ export async function fetchKiteQuotes(symbols: string[], accessToken: string) {
   const body = await response.json() as {
     status?: string;
     message?: string;
+    error_type?: string;
     data?: Record<string, {
       last_price: number;
       volume?: number;
@@ -27,7 +28,12 @@ export async function fetchKiteQuotes(symbols: string[], accessToken: string) {
       ohlc?: { close?: number };
     }>;
   };
-  if (response.status === 401 || response.status === 403) throw new Error('BROKER_AUTH_REJECTED');
+  if (response.status === 401 || body.error_type === 'TokenException') {
+    throw new Error('BROKER_AUTH_REJECTED');
+  }
+  if (response.status === 403 || body.error_type === 'PermissionException') {
+    throw new Error(`BROKER_PERMISSION_DENIED:${body.message || 'Kite Connect market-data permission was denied'}`);
+  }
   if (!response.ok || body.status !== 'success') throw new Error(body.message || 'Kite quote request failed');
   return Object.entries(body.data ?? {}).map(([key, quote]) => ({
     symbol: key.replace(/^NSE:/, ''),

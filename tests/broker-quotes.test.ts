@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { fetchGrowwQuotes } from '../lib/brokers/quotes';
+import { fetchGrowwQuotes, fetchKiteQuotes } from '../lib/brokers/quotes';
 
 const symbols = Array.from({ length: 51 }, (_, index) => `STOCK${index + 1}`);
 
@@ -47,5 +47,25 @@ void test('Groww permission denial is distinct from an expired token', async (co
   await assert.rejects(
     fetchGrowwQuotes(['RELIANCE'], 'valid-but-unentitled-token'),
     /BROKER_PERMISSION_DENIED:Live data entitlement required/,
+  );
+});
+
+void test('Kite PermissionException is distinct from an expired token', async (context) => {
+  const originalFetch = globalThis.fetch;
+  const originalKey = process.env.KITE_API_KEY;
+  process.env.KITE_API_KEY = 'test-api-key';
+  globalThis.fetch = (async () => new Response(
+    JSON.stringify({ status: 'error', error_type: 'PermissionException', message: 'That API call is not allowed' }),
+    { status: 403 },
+  )) as typeof fetch;
+  context.after(() => {
+    globalThis.fetch = originalFetch;
+    if (originalKey === undefined) delete process.env.KITE_API_KEY;
+    else process.env.KITE_API_KEY = originalKey;
+  });
+
+  await assert.rejects(
+    fetchKiteQuotes(['RELIANCE'], 'valid-but-unentitled-token'),
+    /BROKER_PERMISSION_DENIED:That API call is not allowed/,
   );
 });

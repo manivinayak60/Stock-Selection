@@ -4,6 +4,7 @@ import { NextRequest, NextResponse } from 'next/server';
 
 import { nextSixAmIndia, requireUserId } from '@/lib/brokers/auth';
 import { saveBrokerConnection } from '@/lib/brokers/connections';
+import { fetchKiteQuotes } from '@/lib/brokers/quotes';
 
 export const dynamic = 'force-dynamic';
 
@@ -35,10 +36,24 @@ export async function GET(request: NextRequest) {
     const body = await response.json() as {
       status?: string;
       message?: string;
-      data?: { access_token?: string; user_id?: string };
+      error_type?: string;
+      data?: { access_token?: string; user_id?: string; exchanges?: string[] };
     };
     if (!response.ok || body.status !== 'success' || !body.data?.access_token) {
-      throw new Error(body.message || 'Zerodha token exchange failed');
+      throw new Error(
+        body.error_type === 'PermissionException'
+          ? `BROKER_PERMISSION_DENIED:${body.message || 'Kite Connect permission was denied'}`
+          : body.error_type === 'TokenException'
+            ? 'BROKER_AUTH_REJECTED'
+            : body.message || 'Zerodha token exchange failed',
+      );
+    }
+    if (body.data.exchanges && !body.data.exchanges.includes('NSE')) {
+      throw new Error('BROKER_PERMISSION_DENIED:NSE cash-market access is not enabled');
+    }
+    const verification = await fetchKiteQuotes(['RELIANCE'], body.data.access_token);
+    if (!verification[0]) {
+      throw new Error('Zerodha authenticated but returned no RELIANCE market quote');
     }
     await saveBrokerConnection({
       userId,
@@ -48,8 +63,16 @@ export async function GET(request: NextRequest) {
       expiresAt: nextSixAmIndia().toISOString(),
     });
     home.searchParams.set('broker', 'zerodha_connected');
-  } catch {
-    home.searchParams.set('broker_error', 'zerodha_connection_failed');
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '';
+    home.searchParams.set(
+      'broker_error',
+      message.startsWith('BROKER_PERMISSION_DENIED:')
+        ? 'zerodha_permission_denied'
+        : message === 'BROKER_AUTH_REJECTED'
+          ? 'zerodha_token_rejected'
+          : 'zerodha_connection_failed',
+    );
   }
   const result = NextResponse.redirect(home);
   result.cookies.delete('kite_oauth_state');

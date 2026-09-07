@@ -81,7 +81,7 @@ export async function POST(request: Request) {
       error: message === 'BROKER_AUTH_REJECTED'
         ? 'Supabase row exists, but the broker rejected its token; reconnect with today\'s token'
         : message.startsWith('BROKER_PERMISSION_DENIED:')
-          ? `Token is valid, but Groww denied live-market data: ${message.slice('BROKER_PERMISSION_DENIED:'.length)}`
+          ? `Token is valid, but ${provider === 'KITE_CONNECT' ? 'Zerodha' : 'Groww'} denied live-market data: ${message.slice('BROKER_PERMISSION_DENIED:'.length)}`
         : message,
       rowFound: message === 'AUTHENTICATION_REQUIRED' ? undefined : true,
     }, { status });
