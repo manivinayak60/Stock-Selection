@@ -107,6 +107,13 @@ type MarketMeta = {
   lastPipelineError: { stage: string; message: string; createdAt: string } | null;
   databaseBytes: number | null;
 };
+type LiveFeedState = {
+  status: 'EOD' | 'WAITING' | 'LIVE' | 'FALLBACK';
+  requestedCount: number;
+  receivedCount: number;
+  updatedAt: string | null;
+  error: string | null;
+};
 
 const nav: { id: ViewId; label: string; icon: typeof LayoutDashboard }[] = [
   { id: 'dashboard', label: 'Morning brief', icon: LayoutDashboard },
@@ -281,6 +288,9 @@ export function TradingDashboard() {
   const [marketError, setMarketError] = useState<string | null>(null);
   const [brokerConnections, setBrokerConnections] = useState<BrokerConnectionStatus[]>([]);
   const [liveQuotes, setLiveQuotes] = useState<LiveQuote[]>([]);
+  const [liveFeed, setLiveFeed] = useState<LiveFeedState>({
+    status: 'EOD', requestedCount: 0, receivedCount: 0, updatedAt: null, error: null,
+  });
 
   const candidatesWithLivePrices = useMemo(() => {
     const connectionReady = brokerConnections.some(
@@ -409,15 +419,34 @@ export function TradingDashboard() {
 
   useEffect(() => {
     if (settings.provider === 'FREE_EOD') {
-      return;
+      const resetTimer = window.setTimeout(() => {
+        setLiveQuotes([]);
+        setLiveFeed({ status: 'EOD', requestedCount: 0, receivedCount: 0, updatedAt: null, error: null });
+      }, 0);
+      return () => window.clearTimeout(resetTimer);
     }
     const connection = brokerConnections.find((item) => item.provider === settings.provider);
     if (!connection?.connected || !marketCandidates.length) {
-      return;
+      const fallbackTimer = window.setTimeout(() => {
+        setLiveQuotes([]);
+        setLiveFeed({
+          status: connection?.connected ? 'WAITING' : 'FALLBACK',
+          requestedCount: marketCandidates.length,
+          receivedCount: 0,
+          updatedAt: null,
+          error: connection?.connected ? null : 'The selected broker is not connected. NSE EOD prices are being used.',
+        });
+      }, 0);
+      return () => window.clearTimeout(fallbackTimer);
     }
     let stopped = false;
     const refresh = async () => {
       const symbols = marketCandidates.map((item) => item.symbol);
+      if (!stopped) {
+        setLiveFeed((current) => current.status === 'LIVE'
+          ? current
+          : { status: 'WAITING', requestedCount: symbols.length, receivedCount: 0, updatedAt: null, error: null });
+      }
       try {
         const response = await fetch('/api/brokers/quotes', {
           method: 'POST',
@@ -425,12 +454,34 @@ export function TradingDashboard() {
           body: JSON.stringify({ provider: settings.provider, symbols }),
           cache: 'no-store',
         });
-        const data = await response.json() as { quotes?: Omit<LiveQuote, 'provider'>[] };
+        const data = await response.json() as { quotes?: Omit<LiveQuote, 'provider'>[]; error?: string };
         if (response.ok && !stopped) {
-          setLiveQuotes((data.quotes ?? []).map((quote) => ({ ...quote, provider: settings.provider as Exclude<Settings['provider'], 'FREE_EOD'> })));
+          const quotes = (data.quotes ?? []).map((quote) => ({ ...quote, provider: settings.provider as Exclude<Settings['provider'], 'FREE_EOD'> }));
+          const updatedAt = quotes.map((quote) => quote.updatedAt).sort().at(-1) ?? new Date().toISOString();
+          setLiveQuotes(quotes);
+          setLiveFeed({
+            status: quotes.length ? 'LIVE' : 'FALLBACK',
+            requestedCount: symbols.length,
+            receivedCount: quotes.length,
+            updatedAt,
+            error: quotes.length ? null : 'The broker returned no quotes. NSE EOD prices are being used.',
+          });
+        } else if (!stopped) {
+          setLiveQuotes([]);
+          setLiveFeed({
+            status: 'FALLBACK', requestedCount: symbols.length, receivedCount: 0,
+            updatedAt: null, error: data.error ?? 'Live quote refresh failed. NSE EOD prices are being used.',
+          });
         }
-      } catch {
-        if (!stopped) setLiveQuotes([]);
+      } catch (error) {
+        if (!stopped) {
+          setLiveQuotes([]);
+          setLiveFeed({
+            status: 'FALLBACK', requestedCount: symbols.length, receivedCount: 0,
+            updatedAt: null,
+            error: error instanceof Error ? error.message : 'Live quote refresh failed. NSE EOD prices are being used.',
+          });
+        }
       }
     };
     void refresh();
@@ -750,6 +801,11 @@ export function TradingDashboard() {
 
   const pageTitle =
     nav.find((item) => item.id === view)?.label ?? 'Morning brief';
+  const providerName = settings.provider === 'KITE_CONNECT'
+    ? 'Zerodha'
+    : settings.provider === 'GROWW_CONNECT'
+      ? 'Groww'
+      : 'NSE EOD';
 
   return (
     <main className="min-h-screen bg-[var(--canvas)] text-slate-950">
@@ -808,13 +864,15 @@ export function TradingDashboard() {
             </p>
           </div>
           <div className="flex items-center gap-2">
-            <span className="hidden items-center gap-2 rounded-full bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-800 sm:flex">
-              <span className={`size-2 rounded-full ${marketMeta && !marketMeta.stale ? 'bg-emerald-500' : 'bg-amber-500'}`} />{' '}
-              {settings.provider === 'FREE_EOD'
-                ? `${marketMeta?.source ?? 'NSE EOD'} · ${marketMeta ? (marketMeta.stale ? 'Stale' : 'Validated') : 'Unavailable'}`
-                : liveQuotes.length
-                  ? `${settings.provider === 'KITE_CONNECT' ? 'Zerodha' : 'Groww'} live · ${liveQuotes.length} quotes`
-                  : `${settings.provider === 'KITE_CONNECT' ? 'Zerodha' : 'Groww'} waiting · EOD fallback`}
+            <span className={`hidden items-center gap-2 rounded-full px-3 py-1.5 text-xs font-semibold sm:flex ${liveFeed.status === 'LIVE' ? 'bg-emerald-50 text-emerald-800' : liveFeed.status === 'FALLBACK' ? 'bg-rose-50 text-rose-800' : 'bg-blue-50 text-blue-800'}`}>
+              <span className={`size-2 rounded-full ${liveFeed.status === 'LIVE' ? 'animate-pulse bg-emerald-500' : liveFeed.status === 'FALLBACK' ? 'bg-rose-500' : 'bg-blue-500'}`} />{' '}
+              {liveFeed.status === 'LIVE'
+                ? `${providerName} LIVE · ${liveFeed.receivedCount}/${liveFeed.requestedCount}`
+                : liveFeed.status === 'FALLBACK'
+                  ? `${providerName} unavailable · NSE EOD fallback`
+                  : liveFeed.status === 'WAITING'
+                    ? `${providerName} · checking live feed`
+                    : `NSE EOD · ${marketMeta ? (marketMeta.stale ? 'Stale' : 'Validated') : 'Unavailable'}`}
             </span>
             <Button
               variant="outline"
@@ -844,6 +902,31 @@ export function TradingDashboard() {
         </nav>
 
         <div className="mx-auto max-w-[1500px] p-5 md:p-8">
+          <section className={`mb-5 rounded-2xl border p-4 shadow-sm ${liveFeed.status === 'LIVE' ? 'border-emerald-200 bg-emerald-50/70' : liveFeed.status === 'FALLBACK' ? 'border-rose-200 bg-rose-50/70' : 'border-blue-200 bg-blue-50/70'}`} aria-label="Current market data source">
+            <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
+              <div className="flex items-start gap-3">
+                <div className={`mt-0.5 grid size-9 shrink-0 place-items-center rounded-xl ${liveFeed.status === 'LIVE' ? 'bg-emerald-600 text-white' : liveFeed.status === 'FALLBACK' ? 'bg-rose-600 text-white' : 'bg-blue-700 text-white'}`}>
+                  {liveFeed.status === 'LIVE' ? <Radio className="size-4" /> : <Database className="size-4" />}
+                </div>
+                <div>
+                  <p className="text-sm font-bold text-slate-950">
+                    Price source: {liveFeed.status === 'LIVE' ? `${providerName} LIVE` : 'NSE end-of-day'}
+                  </p>
+                  <p className="mt-1 text-xs leading-relaxed text-slate-600">
+                    {liveFeed.status === 'LIVE'
+                      ? `${liveFeed.receivedCount} of ${liveFeed.requestedCount} requested quotes received · Last live pull ${formatIstDateTime(liveFeed.updatedAt)}`
+                      : liveFeed.status === 'WAITING'
+                        ? `Checking ${providerName} now; EOD prices remain visible until quotes arrive.`
+                        : liveFeed.error ?? `Validated NSE closing prices through ${formatMarketDate(marketMeta?.marketDate)}.`}
+                  </p>
+                </div>
+              </div>
+              <div className="rounded-xl border border-white/80 bg-white/80 px-3 py-2 text-xs text-slate-600">
+                <span className="font-semibold text-slate-900">Indicators and score:</span>{' '}
+                NSE EOD · {formatMarketDate(marketMeta?.marketDate)}
+              </div>
+            </div>
+          </section>
           {view === 'dashboard' && (
             <DashboardView
               qualified={qualified}
@@ -1399,7 +1482,12 @@ function OpportunitiesView({
               </p>
               {stock.livePrice !== undefined && (
                 <p className="mt-1 flex items-center gap-1 text-xs font-semibold text-blue-700">
-                  <Radio className="size-3" /> Live {stock.liveProvider === 'KITE_CONNECT' ? 'Zerodha' : 'Groww'} price
+                  <Radio className="size-3" /> {stock.liveProvider === 'KITE_CONNECT' ? 'Zerodha' : 'Groww'} LIVE · {formatIstDateTime(stock.liveUpdatedAt)}
+                </p>
+              )}
+              {stock.livePrice === undefined && (
+                <p className="mt-1 flex items-center gap-1 text-xs font-semibold text-slate-500">
+                  <Database className="size-3" /> NSE EOD close · {formatMarketDate(stock.asOfDate)}
                 </p>
               )}
             </div>
