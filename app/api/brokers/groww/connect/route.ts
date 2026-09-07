@@ -28,15 +28,25 @@ export async function POST(request: Request) {
     const result = await validation.json() as {
       status?: string;
       message?: string;
-      payload?: { user_id?: string; client_id?: string };
+      error?: { message?: string };
+      payload?: {
+        vendor_user_id?: string;
+        ucc?: string;
+        user_id?: string;
+        client_id?: string;
+        nse_enabled?: boolean;
+      };
     };
     if (!validation.ok || result.status !== 'SUCCESS') {
-      return NextResponse.json({ error: result.message || 'Groww rejected this access token' }, { status: 400 });
+      return NextResponse.json({ error: result.error?.message || result.message || 'Groww rejected this access token' }, { status: 400 });
+    }
+    if (result.payload?.nse_enabled === false) {
+      return NextResponse.json({ error: 'NSE cash-market access is not enabled for this Groww account' }, { status: 400 });
     }
     await saveBrokerConnection({
       userId,
       provider: 'GROWW_CONNECT',
-      accountId: result.payload?.user_id ?? result.payload?.client_id ?? null,
+      accountId: result.payload?.ucc ?? result.payload?.vendor_user_id ?? result.payload?.user_id ?? result.payload?.client_id ?? null,
       accessToken,
       expiresAt: nextSixAmIndia().toISOString(),
     });

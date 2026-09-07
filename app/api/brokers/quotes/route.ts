@@ -32,10 +32,17 @@ async function respond(provider: LiveProvider | null, symbols: string[]) {
       await markBrokerConnectionStatus(userId, provider, 'EXPIRED');
       return NextResponse.json({ error: 'Broker session expired', fallback: 'FREE_EOD' }, { status: 409 });
     }
-    const quotes = provider === 'KITE_CONNECT'
-      ? await fetchKiteQuotes(symbols, connection.accessToken)
+    const result = provider === 'KITE_CONNECT'
+      ? { quotes: await fetchKiteQuotes(symbols, connection.accessToken), warnings: [] }
       : await fetchGrowwQuotes(symbols, connection.accessToken);
-    return NextResponse.json({ provider, quotes });
+    return NextResponse.json({
+      provider,
+      quotes: result.quotes,
+      warnings: result.warnings,
+      requestedCount: symbols.length,
+      receivedCount: result.quotes.length,
+      pulledAt: new Date().toISOString(),
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Live quote request failed';
     if (message === 'BROKER_AUTH_REJECTED' && userId && provider) {

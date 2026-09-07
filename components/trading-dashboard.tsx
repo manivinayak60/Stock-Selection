@@ -108,7 +108,7 @@ type MarketMeta = {
   databaseBytes: number | null;
 };
 type LiveFeedState = {
-  status: 'EOD' | 'WAITING' | 'LIVE' | 'FALLBACK';
+  status: 'EOD' | 'WAITING' | 'LIVE' | 'DEGRADED' | 'FALLBACK';
   requestedCount: number;
   receivedCount: number;
   updatedAt: string | null;
@@ -291,6 +291,7 @@ export function TradingDashboard() {
   const [liveFeed, setLiveFeed] = useState<LiveFeedState>({
     status: 'EOD', requestedCount: 0, receivedCount: 0, updatedAt: null, error: null,
   });
+  const [liveRefreshKey, setLiveRefreshKey] = useState(0);
 
   const candidatesWithLivePrices = useMemo(() => {
     const connectionReady = brokerConnections.some(
@@ -454,17 +455,27 @@ export function TradingDashboard() {
           body: JSON.stringify({ provider: settings.provider, symbols }),
           cache: 'no-store',
         });
-        const data = await response.json() as { quotes?: Omit<LiveQuote, 'provider'>[]; error?: string };
+        const data = await response.json() as {
+          quotes?: Omit<LiveQuote, 'provider'>[];
+          warnings?: string[];
+          pulledAt?: string;
+          error?: string;
+        };
         if (response.ok && !stopped) {
           const quotes = (data.quotes ?? []).map((quote) => ({ ...quote, provider: settings.provider as Exclude<Settings['provider'], 'FREE_EOD'> }));
-          const updatedAt = quotes.map((quote) => quote.updatedAt).sort().at(-1) ?? new Date().toISOString();
+          const updatedAt = data.pulledAt ?? quotes.map((quote) => quote.updatedAt).sort().at(-1) ?? new Date().toISOString();
+          const degraded = quotes.length < symbols.length;
           setLiveQuotes(quotes);
           setLiveFeed({
-            status: quotes.length ? 'LIVE' : 'FALLBACK',
+            status: !quotes.length ? 'FALLBACK' : degraded ? 'DEGRADED' : 'LIVE',
             requestedCount: symbols.length,
             receivedCount: quotes.length,
             updatedAt,
-            error: quotes.length ? null : 'The broker returned no quotes. NSE EOD prices are being used.',
+            error: !quotes.length
+              ? 'The broker returned no quotes. NSE EOD prices are being used.'
+              : degraded
+                ? data.warnings?.join(' · ') || `${symbols.length - quotes.length} symbols did not return a live quote; those cards use NSE EOD.`
+                : null,
           });
         } else if (!stopped) {
           setLiveQuotes([]);
@@ -490,7 +501,7 @@ export function TradingDashboard() {
       stopped = true;
       window.clearInterval(timer);
     };
-  }, [brokerConnections, marketCandidates, settings.provider]);
+  }, [brokerConnections, liveRefreshKey, marketCandidates, settings.provider]);
 
   const toggleWatchlist = useCallback(
     async (symbol: string) => {
@@ -864,10 +875,12 @@ export function TradingDashboard() {
             </p>
           </div>
           <div className="flex items-center gap-2">
-            <span className={`hidden items-center gap-2 rounded-full px-3 py-1.5 text-xs font-semibold sm:flex ${liveFeed.status === 'LIVE' ? 'bg-emerald-50 text-emerald-800' : liveFeed.status === 'FALLBACK' ? 'bg-rose-50 text-rose-800' : 'bg-blue-50 text-blue-800'}`}>
-              <span className={`size-2 rounded-full ${liveFeed.status === 'LIVE' ? 'animate-pulse bg-emerald-500' : liveFeed.status === 'FALLBACK' ? 'bg-rose-500' : 'bg-blue-500'}`} />{' '}
+            <span className={`hidden items-center gap-2 rounded-full px-3 py-1.5 text-xs font-semibold sm:flex ${liveFeed.status === 'LIVE' ? 'bg-emerald-50 text-emerald-800' : liveFeed.status === 'DEGRADED' ? 'bg-amber-50 text-amber-800' : liveFeed.status === 'FALLBACK' ? 'bg-rose-50 text-rose-800' : 'bg-blue-50 text-blue-800'}`}>
+              <span className={`size-2 rounded-full ${liveFeed.status === 'LIVE' ? 'animate-pulse bg-emerald-500' : liveFeed.status === 'DEGRADED' ? 'bg-amber-500' : liveFeed.status === 'FALLBACK' ? 'bg-rose-500' : 'bg-blue-500'}`} />{' '}
               {liveFeed.status === 'LIVE'
                 ? `${providerName} LIVE · ${liveFeed.receivedCount}/${liveFeed.requestedCount}`
+                : liveFeed.status === 'DEGRADED'
+                  ? `${providerName} partial · ${liveFeed.receivedCount}/${liveFeed.requestedCount}`
                 : liveFeed.status === 'FALLBACK'
                   ? `${providerName} unavailable · NSE EOD fallback`
                   : liveFeed.status === 'WAITING'
@@ -902,28 +915,37 @@ export function TradingDashboard() {
         </nav>
 
         <div className="mx-auto max-w-[1500px] p-5 md:p-8">
-          <section className={`mb-5 rounded-2xl border p-4 shadow-sm ${liveFeed.status === 'LIVE' ? 'border-emerald-200 bg-emerald-50/70' : liveFeed.status === 'FALLBACK' ? 'border-rose-200 bg-rose-50/70' : 'border-blue-200 bg-blue-50/70'}`} aria-label="Current market data source">
+          <section className={`mb-5 rounded-2xl border p-4 shadow-sm ${liveFeed.status === 'LIVE' ? 'border-emerald-200 bg-emerald-50/70' : liveFeed.status === 'DEGRADED' ? 'border-amber-200 bg-amber-50/70' : liveFeed.status === 'FALLBACK' ? 'border-rose-200 bg-rose-50/70' : 'border-blue-200 bg-blue-50/70'}`} aria-label="Current market data source">
             <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
               <div className="flex items-start gap-3">
-                <div className={`mt-0.5 grid size-9 shrink-0 place-items-center rounded-xl ${liveFeed.status === 'LIVE' ? 'bg-emerald-600 text-white' : liveFeed.status === 'FALLBACK' ? 'bg-rose-600 text-white' : 'bg-blue-700 text-white'}`}>
-                  {liveFeed.status === 'LIVE' ? <Radio className="size-4" /> : <Database className="size-4" />}
+                <div className={`mt-0.5 grid size-9 shrink-0 place-items-center rounded-xl ${liveFeed.status === 'LIVE' ? 'bg-emerald-600 text-white' : liveFeed.status === 'DEGRADED' ? 'bg-amber-500 text-white' : liveFeed.status === 'FALLBACK' ? 'bg-rose-600 text-white' : 'bg-blue-700 text-white'}`}>
+                  {liveFeed.status === 'LIVE' || liveFeed.status === 'DEGRADED' ? <Radio className="size-4" /> : <Database className="size-4" />}
                 </div>
                 <div>
                   <p className="text-sm font-bold text-slate-950">
-                    Price source: {liveFeed.status === 'LIVE' ? `${providerName} LIVE` : 'NSE end-of-day'}
+                    Price source: {liveFeed.status === 'LIVE' ? `${providerName} LIVE` : liveFeed.status === 'DEGRADED' ? `${providerName} LIVE — partial coverage` : 'NSE end-of-day'}
                   </p>
                   <p className="mt-1 text-xs leading-relaxed text-slate-600">
                     {liveFeed.status === 'LIVE'
                       ? `${liveFeed.receivedCount} of ${liveFeed.requestedCount} requested quotes received · Last live pull ${formatIstDateTime(liveFeed.updatedAt)}`
+                      : liveFeed.status === 'DEGRADED'
+                        ? `${liveFeed.receivedCount} of ${liveFeed.requestedCount} quotes received · ${liveFeed.error} · Last pull ${formatIstDateTime(liveFeed.updatedAt)}`
                       : liveFeed.status === 'WAITING'
                         ? `Checking ${providerName} now; EOD prices remain visible until quotes arrive.`
                         : liveFeed.error ?? `Validated NSE closing prices through ${formatMarketDate(marketMeta?.marketDate)}.`}
                   </p>
                 </div>
               </div>
-              <div className="rounded-xl border border-white/80 bg-white/80 px-3 py-2 text-xs text-slate-600">
-                <span className="font-semibold text-slate-900">Indicators and score:</span>{' '}
-                NSE EOD · {formatMarketDate(marketMeta?.marketDate)}
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="rounded-xl border border-white/80 bg-white/80 px-3 py-2 text-xs text-slate-600">
+                  <span className="font-semibold text-slate-900">Indicators and score:</span>{' '}
+                  NSE EOD · {formatMarketDate(marketMeta?.marketDate)}
+                </div>
+                {(liveFeed.status === 'FALLBACK' || liveFeed.status === 'DEGRADED') && settings.provider !== 'FREE_EOD' && (
+                  <Button size="sm" variant="outline" onClick={() => setLiveRefreshKey((value) => value + 1)}>
+                    <RefreshCw className="size-3.5" /> Retry live feed
+                  </Button>
+                )}
               </div>
             </div>
           </section>

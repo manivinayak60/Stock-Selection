@@ -43,7 +43,7 @@ export async function fetchGrowwQuotes(symbols: string[], accessToken: string) {
   for (let index = 0; index < symbols.length; index += 50) {
     batches.push(symbols.slice(index, index + 50));
   }
-  const results = await Promise.all(batches.map(async (batch) => {
+  const fetchBatch = async (batch: string[]) => {
     const exchangeSymbols = batch.map((symbol) => `NSE_${symbol}`).join(',');
     const response = await fetch(
       `https://api.groww.in/v1/live-data/ltp?segment=CASH&exchange_symbols=${encodeURIComponent(exchangeSymbols)}`,
@@ -60,10 +60,13 @@ export async function fetchGrowwQuotes(symbols: string[], accessToken: string) {
     const body = await response.json() as {
       status?: string;
       message?: string;
+      error?: { code?: string; message?: string };
       payload?: Record<string, number>;
     };
     if (response.status === 401 || response.status === 403) throw new Error('BROKER_AUTH_REJECTED');
-    if (!response.ok || body.status !== 'SUCCESS') throw new Error(body.message || 'Groww quote request failed');
+    if (!response.ok || body.status !== 'SUCCESS') {
+      throw new Error(body.error?.message || body.message || `Groww quote request failed (${response.status})`);
+    }
     const updatedAt = new Date().toISOString();
     return Object.entries(body.payload ?? {}).map(([key, value]) => ({
         symbol: key.replace(/^NSE_/, ''),
@@ -72,6 +75,24 @@ export async function fetchGrowwQuotes(symbols: string[], accessToken: string) {
         volume: null,
         updatedAt,
       } satisfies BrokerQuote));
-  }));
-  return results.flat();
+  };
+
+  const quotes: BrokerQuote[] = [];
+  const warnings: string[] = [];
+  // Keep below Groww's live-data burst limit and preserve healthy batches if a
+  // symbol-specific or transient failure affects one request.
+  for (let index = 0; index < batches.length; index += 4) {
+    const wave = await Promise.allSettled(batches.slice(index, index + 4).map(fetchBatch));
+    for (const result of wave) {
+      if (result.status === 'fulfilled') {
+        quotes.push(...result.value);
+      } else {
+        const message = result.reason instanceof Error ? result.reason.message : 'Unknown Groww batch failure';
+        if (message === 'BROKER_AUTH_REJECTED') throw result.reason;
+        warnings.push(message);
+      }
+    }
+  }
+  if (!quotes.length) throw new Error(warnings[0] ?? 'Groww returned no live prices');
+  return { quotes, warnings: [...new Set(warnings)] };
 }
